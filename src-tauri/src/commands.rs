@@ -3,7 +3,30 @@ use crate::models::{
     RewriteOptions, RewriteProgress, RewriteResult, RewriteScopeStats, RewriteSession,
 };
 use std::path::Path;
-use tauri::{AppHandle, Emitter};
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+use tauri::{AppHandle, Emitter, State};
+
+#[derive(Clone, Default)]
+pub struct RewriteCancelState {
+    cancelled: Arc<AtomicBool>,
+}
+
+impl RewriteCancelState {
+    fn reset(&self) {
+        self.cancelled.store(false, Ordering::SeqCst);
+    }
+
+    fn cancel(&self) {
+        self.cancelled.store(true, Ordering::SeqCst);
+    }
+
+    fn is_cancelled(&self) -> bool {
+        self.cancelled.load(Ordering::SeqCst)
+    }
+}
 
 #[tauri::command]
 pub fn parse_file(file_path: String) -> Result<Vec<Paragraph>, String> {
@@ -24,11 +47,13 @@ pub fn estimate_rewrite_scope(
 #[tauri::command]
 pub async fn rewrite_paragraphs(
     app: AppHandle,
+    cancel_state: State<'_, RewriteCancelState>,
     paragraphs: Vec<Paragraph>,
     config: ApiConfig,
     options: Option<RewriteOptions>,
     session: Option<RewriteSession>,
 ) -> Result<Vec<RewriteResult>, String> {
+    cancel_state.reset();
     crate::rewriter::validate_config(&config).map_err(|error| error.to_string())?;
     let client = crate::rewriter::create_client().map_err(|error| error.to_string())?;
     let rewrite_options = options.unwrap_or_default();
@@ -41,6 +66,10 @@ pub async fn rewrite_paragraphs(
         .unwrap_or_else(|| Vec::with_capacity(total));
 
     for (position, paragraph) in selected.into_iter().enumerate() {
+        if cancel_state.is_cancelled() {
+            break;
+        }
+
         let result =
             crate::rewriter::rewrite_paragraph(&client, &config, &rewrite_options, paragraph).await;
         let current = position + 1;
@@ -75,6 +104,10 @@ pub async fn rewrite_paragraphs(
         } else {
             crate::config::save_results(&app, &results).map_err(|error| error.to_string())?;
         }
+
+        if cancel_state.is_cancelled() {
+            break;
+        }
     }
 
     if let Some(session) = active_session {
@@ -83,6 +116,12 @@ pub async fn rewrite_paragraphs(
         crate::config::save_results(&app, &results).map_err(|error| error.to_string())?;
     }
     Ok(results)
+}
+
+#[tauri::command]
+pub fn cancel_rewrite(cancel_state: State<'_, RewriteCancelState>) -> Result<(), String> {
+    cancel_state.cancel();
+    Ok(())
 }
 
 #[tauri::command]

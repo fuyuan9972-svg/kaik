@@ -31,6 +31,8 @@ interface AppState {
   config: ApiConfig;
   currentAiRate: number;
   targetAiRate: number;
+  activeRewriteKind: "full" | "sample" | "";
+  cancelRewriteRequested: boolean;
   loading: boolean;
   status: string;
   error: string;
@@ -68,8 +70,10 @@ export const useAppStore = defineStore("app", {
     progressCurrent: 0,
     progressTotal: 0,
     config: { ...defaultConfig },
-    currentAiRate: 70,
-    targetAiRate: 20,
+    currentAiRate: 60,
+    targetAiRate: 10,
+    activeRewriteKind: "",
+    cancelRewriteRequested: false,
     loading: false,
     status: "",
     error: "",
@@ -118,6 +122,8 @@ export const useAppStore = defineStore("app", {
 
     async parseFile(filePath: string) {
       this.loading = true;
+      this.activeRewriteKind = "";
+      this.cancelRewriteRequested = false;
       this.error = "";
       this.status = "正在解析文件";
       try {
@@ -137,6 +143,7 @@ export const useAppStore = defineStore("app", {
     },
 
     async rewrite(options: RewriteOptions = {}) {
+      const activeKind = options.sampleLimit ? "sample" : "full";
       const existingResults = options.sampleLimit
         ? []
         : this.results.filter((item) => item.accepted && !item.failed && !item.skipped);
@@ -149,6 +156,8 @@ export const useAppStore = defineStore("app", {
       };
       const scopeStats = await this.estimateScopeStats(rewriteOptions);
       this.loading = true;
+      this.activeRewriteKind = activeKind;
+      this.cancelRewriteRequested = false;
       this.error = "";
       this.results = [...existingResults];
       this.progressCurrent = 0;
@@ -196,13 +205,21 @@ export const useAppStore = defineStore("app", {
         });
         this.results = finalResults;
         this.updateCurrentSession({ results: this.results });
-        this.page = "compare";
+        if (this.cancelRewriteRequested) {
+          this.status = `已中止，已保留 ${this.results.length} 个段落结果`;
+        } else {
+          this.page = "compare";
+        }
       } catch (error) {
         this.error = String(error);
       } finally {
         unlisten();
         this.loading = false;
-        this.status = "";
+        if (!this.cancelRewriteRequested) {
+          this.status = "";
+        }
+        this.activeRewriteKind = "";
+        this.cancelRewriteRequested = false;
         this.progressCurrent = 0;
         this.progressTotal = 0;
       }
@@ -213,6 +230,22 @@ export const useAppStore = defineStore("app", {
       this.config.promptProfile = this.config.promptProfile || "sample_calibrated_17_v2";
       await this.rewrite({ sampleLimit: 20 });
       this.config.promptProfile = previousProfile;
+    },
+
+    async cancelRewrite() {
+      if (!this.activeRewriteKind) {
+        return;
+      }
+      this.cancelRewriteRequested = true;
+      this.status =
+        this.activeRewriteKind === "sample"
+          ? "正在中止测试，当前段落返回后停止"
+          : "正在中止改写，当前段落返回后停止";
+      try {
+        await invoke("cancel_rewrite");
+      } catch (error) {
+        this.error = String(error);
+      }
     },
 
     async testConnection() {

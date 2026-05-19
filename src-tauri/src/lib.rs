@@ -9,6 +9,7 @@ mod rewriter;
 
 pub fn run() {
     tauri::Builder::default()
+        .manage(commands::RewriteCancelState::default())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_store::Builder::new().build())
@@ -16,6 +17,7 @@ pub fn run() {
             commands::parse_file,
             commands::estimate_rewrite_scope,
             commands::rewrite_paragraphs,
+            commands::cancel_rewrite,
             commands::test_connection,
             commands::export_docx,
             commands::save_config,

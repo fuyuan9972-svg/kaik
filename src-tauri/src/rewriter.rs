@@ -542,8 +542,8 @@ fn system_prompt(language: &str, prompt_profile: &str, options: &RewriteOptions)
 }
 
 fn sample_calibrated_28_prompt(options: &RewriteOptions) -> String {
-    let current = options.current_ai_rate.unwrap_or(70.0).clamp(0.0, 100.0);
-    let target = options.target_ai_rate.unwrap_or(20.0).clamp(0.0, 100.0);
+    let current = options.current_ai_rate.unwrap_or(60.0).clamp(0.0, 100.0);
+    let target = options.target_ai_rate.unwrap_or(10.0).clamp(0.0, 100.0);
     let gap = (current - target).max(0.0);
     let intensity = if current >= 80.0 && target <= 15.0 {
         "强扰动"
@@ -559,8 +559,8 @@ fn sample_calibrated_28_prompt(options: &RewriteOptions) -> String {
 }
 
 fn legacy_directive_prompt(options: &RewriteOptions) -> String {
-    let current = options.current_ai_rate.unwrap_or(70.0).clamp(0.0, 100.0);
-    let target = options.target_ai_rate.unwrap_or(20.0).clamp(0.0, 100.0);
+    let current = options.current_ai_rate.unwrap_or(60.0).clamp(0.0, 100.0);
+    let target = options.target_ai_rate.unwrap_or(10.0).clamp(0.0, 100.0);
     let gap = (current - target).max(0.0);
     let intensity = if current >= 80.0 && target <= 15.0 {
         "强扰动"

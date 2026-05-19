@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { FlaskConical, Play, Settings } from "lucide-vue-next";
+import { FlaskConical, Play, Settings, Square } from "lucide-vue-next";
 import FileUpload from "../components/FileUpload.vue";
 import ProgressBar from "../components/ProgressBar.vue";
 import { useAppStore } from "../stores/app";
@@ -67,15 +67,21 @@ function fileName(path: string) {
         :total="store.loading ? store.progressTotal : store.rewriteableCount"
         :label="store.loading ? store.status : `等待开始，实际调用 API ${store.rewriteableCount} 段`"
       />
-      <div class="metric-grid ai-rate-grid">
-        <label>
-          <span>当前AI率</span>
-          <input v-model.number="store.currentAiRate" type="number" min="0" max="100" step="1" />
-        </label>
-        <label>
-          <span>目标AI率</span>
-          <input v-model.number="store.targetAiRate" type="number" min="0" max="100" step="1" />
-        </label>
+      <div class="ai-rate-panel">
+        <div class="section-heading">
+          <span>改写强度</span>
+          <small>用于提示词判断力度，默认按 60 → 10。</small>
+        </div>
+        <div class="metric-grid ai-rate-grid">
+          <label>
+            <span>当前AI率</span>
+            <input v-model.number="store.currentAiRate" type="number" min="0" max="100" step="1" />
+          </label>
+          <label>
+            <span>目标AI率</span>
+            <input v-model.number="store.targetAiRate" type="number" min="0" max="100" step="1" />
+          </label>
+        </div>
       </div>
       <p v-if="store.loading && store.results.length" class="progress-note">
         本轮已收到 {{ store.results.length }} 个段落结果；失败段落会自动保留原文并继续处理。
@@ -85,20 +91,28 @@ function fileName(path: string) {
         <button
           class="primary-button"
           type="button"
-          :disabled="store.loading || store.rewriteableCount === 0"
-          @click="() => store.rewrite()"
+          :disabled="
+            store.rewriteableCount === 0 ||
+            (store.loading && store.activeRewriteKind !== 'full')
+          "
+          @click="store.activeRewriteKind === 'full' ? store.cancelRewrite() : store.rewrite()"
         >
-          <Play :size="17" />
-          开始改写
+          <Square v-if="store.activeRewriteKind === 'full'" :size="17" />
+          <Play v-else :size="17" />
+          {{ store.activeRewriteKind === "full" ? "中止改写" : "开始改写" }}
         </button>
         <button
           class="secondary-button"
           type="button"
-          :disabled="store.loading || store.rewriteableCount === 0"
-          @click="store.runSampleTest"
+          :disabled="
+            store.rewriteableCount === 0 ||
+            (store.loading && store.activeRewriteKind !== 'sample')
+          "
+          @click="store.activeRewriteKind === 'sample' ? store.cancelRewrite() : store.runSampleTest()"
         >
-          <FlaskConical :size="17" />
-          测试 20 段
+          <Square v-if="store.activeRewriteKind === 'sample'" :size="17" />
+          <FlaskConical v-else :size="17" />
+          {{ store.activeRewriteKind === "sample" ? "中止测试" : "测试 20 段" }}
         </button>
       </div>
     </section>
