@@ -54,9 +54,9 @@ const store = useAppStore();
       </label>
       <label>
         <span>检测模型名</span>
-        <input v-model="store.config.detectModel" placeholder="留空则使用改写模型" />
+        <input v-model="store.config.detectModel" placeholder="gpt-5.4" />
       </label>
-      <p class="form-note">用于检测页的 AI 混合检测；可和改写模型分开。</p>
+      <p class="form-note">用于 AI 混合检测、测试20段分析和 PP 数据反推；留空时默认 gpt-5.4。</p>
       <div class="action-row">
         <button class="secondary-button" type="button" :disabled="store.loading" @click="store.testConnection">
           <PlugZap :size="16" />

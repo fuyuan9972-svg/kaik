@@ -1,6 +1,8 @@
 use crate::models::{
-    AigcAnalysis, AigcCalibrationInput, AigcCalibrationSample, ApiConfig, Paragraph,
+    AigcAnalysis, AigcCalibrationInput, AigcCalibrationRule, AigcCalibrationSample,
+    AigcDetectionSnapshot, AigcFeedbackInput, AigcFeedbackRecord, ApiConfig, Paragraph,
     RewriteOptions, RewriteProgress, RewriteResult, RewriteScopeStats, RewriteSession,
+    TrialEvaluation, TrialEvaluationInput,
 };
 use std::path::Path;
 use std::sync::{
@@ -41,6 +43,19 @@ pub fn estimate_rewrite_scope(
     Ok(crate::rewriter::estimate_rewrite_scope(
         &paragraphs,
         options,
+    ))
+}
+
+#[tauri::command]
+pub fn select_sample_indices(
+    paragraphs: Vec<Paragraph>,
+    analysis: Option<AigcAnalysis>,
+    limit: usize,
+) -> Result<Vec<usize>, String> {
+    Ok(crate::rewriter::select_sample_indices(
+        &paragraphs,
+        analysis.as_ref(),
+        limit,
     ))
 }
 
@@ -216,7 +231,12 @@ pub fn delete_session(app: AppHandle, session_id: String) -> Result<Vec<RewriteS
 #[tauri::command]
 pub fn analyze_aigc_file(app: AppHandle, file_path: String) -> Result<AigcAnalysis, String> {
     let samples = crate::config::load_aigc_calibrations(&app).map_err(|error| error.to_string())?;
-    crate::aigc_detector::analyze_file(&file_path, &samples).map_err(|error| error.to_string())
+    let rules = crate::config::load_calibration_rules(&app).map_err(|error| error.to_string())?;
+    let analysis = crate::aigc_detector::analyze_file(&file_path, &samples)
+        .map_err(|error| error.to_string())?;
+    Ok(crate::aigc_detector::apply_calibration_rules(
+        analysis, &rules,
+    ))
 }
 
 #[tauri::command]
@@ -226,11 +246,24 @@ pub async fn analyze_aigc_file_ai(
     config: ApiConfig,
 ) -> Result<AigcAnalysis, String> {
     let samples = crate::config::load_aigc_calibrations(&app).map_err(|error| error.to_string())?;
+    let rules = crate::config::load_calibration_rules(&app).map_err(|error| error.to_string())?;
+    let feedback_records =
+        crate::config::load_feedback_records(&app).map_err(|error| error.to_string())?;
     let config = detection_config(config);
     let client = crate::rewriter::create_client().map_err(|error| error.to_string())?;
-    crate::ai_aigc_detector::analyze_file_with_fallback(&client, &config, &file_path, &samples)
-        .await
-        .map_err(|error| error.to_string())
+    let analysis = crate::ai_aigc_detector::analyze_file_with_fallback(
+        &client,
+        &config,
+        &file_path,
+        &samples,
+        &feedback_records,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    let analysis = crate::aigc_detector::apply_calibration_rules(analysis, &rules);
+    let snapshot = crate::calibration::create_snapshot(&file_path, analysis.clone());
+    crate::config::upsert_detection_snapshot(&app, snapshot).map_err(|error| error.to_string())?;
+    Ok(analysis)
 }
 
 #[tauri::command]
@@ -275,6 +308,64 @@ pub fn delete_aigc_calibration(
     crate::config::delete_aigc_calibration(&app, &sample_id).map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+pub async fn evaluate_trial_rewrite(
+    config: ApiConfig,
+    input: TrialEvaluationInput,
+) -> Result<TrialEvaluation, String> {
+    let config = detection_config(config);
+    let client = crate::rewriter::create_client().map_err(|error| error.to_string())?;
+    crate::trial_evaluator::evaluate_with_fallback(&client, &config, input)
+        .await
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn load_detection_snapshots(app: AppHandle) -> Result<Vec<AigcDetectionSnapshot>, String> {
+    crate::config::load_detection_snapshots(&app).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn load_feedback_records(app: AppHandle) -> Result<Vec<AigcFeedbackRecord>, String> {
+    crate::config::load_feedback_records(&app).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn save_feedback_record(
+    app: AppHandle,
+    config: ApiConfig,
+    input: AigcFeedbackInput,
+) -> Result<Vec<AigcFeedbackRecord>, String> {
+    let mut record = crate::calibration::create_feedback_record(&app, input)
+        .map_err(|error| error.to_string())?;
+    let snapshots =
+        crate::config::load_detection_snapshots(&app).map_err(|error| error.to_string())?;
+    let detect_config = detection_config(config);
+    if crate::rewriter::validate_config(&detect_config).is_ok() {
+        let client = crate::rewriter::create_client().map_err(|error| error.to_string())?;
+        if let Ok(review) = crate::calibration::review_feedback_with_ai(
+            &client,
+            &detect_config,
+            &snapshots,
+            &record,
+        )
+        .await
+        {
+            record.ai_review = Some(review);
+        }
+    }
+    let records =
+        crate::config::upsert_feedback_record(&app, record).map_err(|error| error.to_string())?;
+    let rules = crate::calibration::build_rules(&records);
+    crate::config::save_calibration_rules(&app, &rules).map_err(|error| error.to_string())?;
+    Ok(records)
+}
+
+#[tauri::command]
+pub fn load_calibration_rules(app: AppHandle) -> Result<Vec<AigcCalibrationRule>, String> {
+    crate::config::load_calibration_rules(&app).map_err(|error| error.to_string())
+}
+
 fn current_timestamp() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -294,8 +385,10 @@ fn detection_config(mut config: ApiConfig) -> ApiConfig {
     if !detect_api_key.is_empty() {
         config.api_key = detect_api_key.to_string();
     }
-    if !detect_model.is_empty() {
-        config.model = detect_model.to_string();
-    }
+    config.model = if !detect_model.is_empty() {
+        detect_model.to_string()
+    } else {
+        "gpt-5.4".to_string()
+    };
     config
 }

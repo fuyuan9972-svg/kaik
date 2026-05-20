@@ -1,13 +1,16 @@
 use crate::models::{
-    ApiConfig, Paragraph, RewriteOptions, RewriteResult, RewriteScopeStats, RewriteSkipCategory,
+    AigcAnalysis, ApiConfig, ExternalAigcReportEvidence, Paragraph, RewriteOptions, RewriteResult,
+    RewriteScopeStats, RewriteSkipCategory,
 };
 use anyhow::{bail, Context};
-use reqwest::Client;
+use reqwest::{Client, StatusCode};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashSet};
-use tokio::time::{timeout, Duration};
+use tokio::time::{sleep, timeout, Duration};
 
 const REQUEST_TIMEOUT_SECS: u64 = 45;
+const MAX_API_ATTEMPTS: usize = 4;
+const RETRY_DELAYS_SECS: [u64; 3] = [2, 4, 8];
 
 #[derive(Debug, Serialize)]
 struct ChatRequest {
@@ -61,7 +64,7 @@ pub async fn test_connection(config: ApiConfig) -> anyhow::Result<bool> {
     validate_config(&config)?;
     let client = create_client()?;
     let options = RewriteOptions::default();
-    let prompt = system_prompt(&config.language, &config.prompt_profile, &options);
+    let prompt = system_prompt(&config.language, &config.prompt_profile, &options, None);
     rewrite_once(&client, &config, &prompt, "这是一个连通性测试段落。").await?;
     Ok(true)
 }
@@ -100,10 +103,15 @@ pub fn select_paragraphs(
     let options = options.unwrap_or_default();
     let sample_limit = options.sample_limit;
     let exclude_indices: HashSet<usize> = options.exclude_indices.into_iter().collect();
+    let include_indices: HashSet<usize> = options.include_indices.into_iter().collect();
 
     paragraphs
         .into_iter()
         .filter_map(|paragraph| {
+            if !include_indices.is_empty() && !include_indices.contains(&paragraph.index) {
+                return None;
+            }
+
             if exclude_indices.contains(&paragraph.index) {
                 return None;
             }
@@ -124,6 +132,81 @@ pub fn select_paragraphs(
         .collect()
 }
 
+pub fn select_sample_indices(
+    paragraphs: &[Paragraph],
+    analysis: Option<&AigcAnalysis>,
+    limit: usize,
+) -> Vec<usize> {
+    let limit = limit.max(1);
+    let body: Vec<&Paragraph> = paragraphs
+        .iter()
+        .filter(|paragraph| rewrite_skip_reason(paragraph).is_none())
+        .collect();
+    let mut selected = Vec::<usize>::new();
+    let mut seen = HashSet::<usize>::new();
+
+    if let Some(analysis) = analysis {
+        for risk in analysis.paragraph_risks.iter().take(limit) {
+            add_sample_index(&body, risk.index, &mut selected, &mut seen, limit);
+        }
+    }
+
+    let mut by_len = body.clone();
+    by_len.sort_by_key(|paragraph| std::cmp::Reverse(paragraph.text.chars().count()));
+    for paragraph in by_len.into_iter().take(limit / 3 + 3) {
+        add_sample_index(&body, paragraph.index, &mut selected, &mut seen, limit);
+    }
+
+    if !body.is_empty() {
+        let last = body.len().saturating_sub(1);
+        let positions = [
+            0,
+            1,
+            2,
+            body.len() / 4,
+            body.len() / 3,
+            body.len() / 2,
+            body.len() * 2 / 3,
+            body.len() * 3 / 4,
+            last.saturating_sub(2),
+            last.saturating_sub(1),
+            last,
+        ];
+        for position in positions {
+            if let Some(paragraph) = body.get(position) {
+                add_sample_index(&body, paragraph.index, &mut selected, &mut seen, limit);
+            }
+        }
+    }
+
+    for paragraph in body {
+        add_sample_index(&[], paragraph.index, &mut selected, &mut seen, limit);
+        if selected.len() >= limit {
+            break;
+        }
+    }
+
+    selected.sort_unstable();
+    selected
+}
+
+fn add_sample_index(
+    body: &[&Paragraph],
+    index: usize,
+    selected: &mut Vec<usize>,
+    seen: &mut HashSet<usize>,
+    limit: usize,
+) {
+    if selected.len() >= limit || seen.contains(&index) {
+        return;
+    }
+    if !body.is_empty() && !body.iter().any(|paragraph| paragraph.index == index) {
+        return;
+    }
+    seen.insert(index);
+    selected.push(index);
+}
+
 pub fn estimate_rewrite_scope(
     paragraphs: &[Paragraph],
     options: Option<RewriteOptions>,
@@ -131,11 +214,18 @@ pub fn estimate_rewrite_scope(
     let options = options.unwrap_or_default();
     let sample_limit = options.sample_limit;
     let exclude_indices: HashSet<usize> = options.exclude_indices.into_iter().collect();
+    let include_indices: HashSet<usize> = options.include_indices.into_iter().collect();
     let mut selected = 0usize;
     let mut skipped = 0usize;
     let mut categories = BTreeMap::<String, usize>::new();
 
     for paragraph in paragraphs {
+        if !include_indices.is_empty() && !include_indices.contains(&paragraph.index) {
+            skipped += 1;
+            *categories.entry("建议范围外".to_string()).or_insert(0) += 1;
+            continue;
+        }
+
         if exclude_indices.contains(&paragraph.index) {
             skipped += 1;
             *categories.entry("已改写段落".to_string()).or_insert(0) += 1;
@@ -206,7 +296,12 @@ pub async fn rewrite_paragraph(
         return rewrite_doubao_two_pass(client, config, paragraph).await;
     }
 
-    let prompt = system_prompt(&config.language, &config.prompt_profile, options);
+    let prompt = system_prompt(
+        &config.language,
+        &config.prompt_profile,
+        options,
+        options.external_report.as_ref(),
+    );
     match rewrite_once(client, config, &prompt, &paragraph.text).await {
         Ok(rewritten) => build_success_result(config, paragraph, rewritten),
         Err(error) => RewriteResult {
@@ -228,7 +323,12 @@ async fn rewrite_doubao_two_pass(
     paragraph: Paragraph,
 ) -> RewriteResult {
     let default_options = RewriteOptions::default();
-    let first_prompt = system_prompt(&config.language, "doubao_plain_humanize", &default_options);
+    let first_prompt = system_prompt(
+        &config.language,
+        "doubao_plain_humanize",
+        &default_options,
+        None,
+    );
     let first = match rewrite_once(client, config, &first_prompt, &paragraph.text).await {
         Ok(value) => value,
         Err(error) => {
@@ -381,35 +481,83 @@ async fn chat_once(
         max_tokens,
     };
 
-    timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), async {
-        let response = client
+    let mut last_error = String::new();
+    for attempt in 0..MAX_API_ATTEMPTS {
+        match chat_attempt(client, &url, config, &request).await {
+            Ok(content) => return Ok(content),
+            Err(error) if error.retryable && attempt + 1 < MAX_API_ATTEMPTS => {
+                last_error = error.message;
+                sleep(Duration::from_secs(RETRY_DELAYS_SECS[attempt])).await;
+            }
+            Err(error) => bail!(error.message),
+        }
+    }
+    bail!(last_error)
+}
+
+struct ChatAttemptError {
+    message: String,
+    retryable: bool,
+}
+
+async fn chat_attempt(
+    client: &Client,
+    url: &str,
+    config: &ApiConfig,
+    request: &ChatRequest,
+) -> Result<String, ChatAttemptError> {
+    let response = timeout(Duration::from_secs(REQUEST_TIMEOUT_SECS), async {
+        client
             .post(url)
             .bearer_auth(&config.api_key)
-            .json(&request)
+            .json(request)
             .send()
             .await
-            .context("API request failed")?;
-
-        if !response.status().is_success() {
-            let status = response.status();
-            let body = response.text().await.unwrap_or_default();
-            bail!("API returned {status}: {body}");
-        }
-
-        let body_text = response
-            .text()
-            .await
-            .context("unable to read API response body")?;
-        let body: ChatResponse =
-            serde_json::from_str(&body_text).context("unable to parse API response")?;
-        let content = extract_chat_content(body)
-            .or_else(|| extract_text_from_json(&body_text))
-            .context("API response did not include rewritten text")?;
-
-        Ok(content)
     })
     .await
-    .context("API request timed out")?
+    .map_err(|_| ChatAttemptError {
+        message: "API request timed out".to_string(),
+        retryable: true,
+    })?
+    .map_err(|error| ChatAttemptError {
+        message: format!("API request failed: {error}"),
+        retryable: true,
+    })?;
+
+    let status = response.status();
+    let body_text = response.text().await.map_err(|error| ChatAttemptError {
+        message: format!("unable to read API response body: {error}"),
+        retryable: is_retryable_status(status),
+    })?;
+
+    if !status.is_success() {
+        return Err(ChatAttemptError {
+            message: format!("API returned {status}: {body_text}"),
+            retryable: is_retryable_status(status),
+        });
+    }
+
+    let body: ChatResponse =
+        serde_json::from_str(&body_text).map_err(|error| ChatAttemptError {
+            message: format!("unable to parse API response: {error}"),
+            retryable: false,
+        })?;
+    extract_chat_content(body)
+        .or_else(|| extract_text_from_json(&body_text))
+        .ok_or_else(|| ChatAttemptError {
+            message: "API response did not include rewritten text".to_string(),
+            retryable: false,
+        })
+}
+
+fn is_retryable_status(status: StatusCode) -> bool {
+    matches!(
+        status,
+        StatusCode::TOO_MANY_REQUESTS
+            | StatusCode::INTERNAL_SERVER_ERROR
+            | StatusCode::BAD_GATEWAY
+            | StatusCode::SERVICE_UNAVAILABLE
+    )
 }
 
 fn extract_chat_content(body: ChatResponse) -> Option<String> {
@@ -488,16 +636,21 @@ pub fn validate_config(config: &ApiConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn system_prompt(language: &str, prompt_profile: &str, options: &RewriteOptions) -> String {
+fn system_prompt(
+    language: &str,
+    prompt_profile: &str,
+    options: &RewriteOptions,
+    external_report: Option<&ExternalAigcReportEvidence>,
+) -> String {
     match (language, prompt_profile) {
-        (_, "sample_calibrated_17_v2") => sample_calibrated_17_v2_prompt(options),
-        (_, "sample_calibrated_17_success") => legacy_directive_prompt(options),
-        (_, "sample_calibrated_17") => legacy_directive_prompt(options),
+        (_, "sample_calibrated_17_v2") => sample_calibrated_17_v2_prompt(options, external_report),
+        (_, "sample_calibrated_17_success") => legacy_directive_prompt(options, external_report),
+        (_, "sample_calibrated_17") => legacy_directive_prompt(options, external_report),
         (_, "sample_calibrated_28") => {
             sample_calibrated_28_prompt(options)
         }
         (_, "directive_aigc_reduce") | (_, "directive_aigc_reduce_legacy") => {
-            legacy_directive_prompt(options)
+            legacy_directive_prompt(options, external_report)
         }
         (_, "doubao_plain_humanize") => {
             "你只改写用户给出的中文论文段落，目标是降低 PaperPass AIGC 痕迹，不是润色得更高级。保留原意、术语、数据、公式、引用和论证顺序，不新增事实、案例、引用或结论。按这些经验处理：多保留或少量加入自然的虚词，如“的、了、到、过、有、能、把、会”；删掉或替换“首先、其次、最后、此外、综上”等机器化连接词，可用“一是、二是、一方面、另一方面、第一点、第二点”；减少短句和连续句号，能合并时用逗号或分号连起来；把偏正式、复杂、生僻的词换成简单常用但仍学术的表达；适当调整前后结构、把字句、被动句和定语位置。不要使用“不仅……更……、展现出、圆满完成、阶梯式增长、显著提升、具有重要意义、提供实践参考、有效路径”等 AI 套话。只输出改写后的段落，不要解释、标题、列表、Markdown 或复述规则。".to_string()
@@ -554,11 +707,14 @@ fn sample_calibrated_28_prompt(options: &RewriteOptions) -> String {
     };
 
     format!(
-        "你是中文本科论文降 AIGC 改写助手。用户检测到当前 AI 率约为 {current:.0}%，希望降到 {target:.0}% 左右。本数值只用于决定改写强度，不要在输出中提到。当前强度：{intensity}。\n\n先在内部判断原段落的 AI 痕迹，再只输出改写后的段落。不要输出分析、标题、列表、Markdown、规则复述或“修改后：”。\n\n核心风格：参考一个已经把 AIGC 降到 17% 的成功样本，把高 AI 味的浓缩论文句改成更解释性、更像本科生论文的表达。文字可以略有生涩和稚嫩，态度端正，保留学术性，但不要写得太顺、太高级、太像标准润色稿。\n\n必须保留：原文事实、研究对象、术语、数据、公式、引用标记、专有名词和基本论证关系。禁止新增事实、案例、数据、引用、结论或第一人称。禁止“呢、啦、么”等闲聊语气。\n\n改写手法：\n1. 优先把压缩、工整、总结式的长句拆成 2-4 个更朴素的句子；如果原文已经短而清楚，可以只做轻微调整。\n2. 允许比原文长约 20%-35%，用于把过度浓缩的判断解释开；但不能为了凑字加入新信息。\n3. 弱化或替换 AI 和论文模板词，尤其是“显著提升、促进、推动、完善、深度融合、有效路径、提供参考、具有重要意义、赋能、旨在、调研发现、实践参考、理论参考”等。优先改成更普通的说法。\n4. 有控制地加入本科论文常见缓冲表达，如“比较、一些、一定、还、可以、会、里面、方面、情况、来看、过程中、不够、并不、有一部分、相对”等；不要每句话都塞，保持自然分布。\n5. 连接方式要普通，不要统一套“首先、其次、最后、此外、综上”。可以用“从……来看、对……而言、在……中、还有、另外、这样”等较朴素表达。\n6. 可以保留一点不够圆滑的语序和重复，让文字像学生自己整理出来的论文；但不能变成病句、口水话或聊天语气。\n7. 对引用、年份、百分比、观察次数、作者姓名和专业术语必须谨慎保留，不要改错。\n\n输出要求：只输出最终段落纯文本。"
+        "你是中文本科论文降 AIGC 改写助手。用户检测到当前 AI 率约为 {current:.0}%，希望降到 {target:.0}% 左右。本数值只用于决定改写强度，不要在输出中提到。当前强度：{intensity}。\n\n先在内部判断原段落的 AI 痕迹，再只输出改写后的段落。不要输出分析、标题、列表、Markdown、规则复述或“修改后：”。\n\n核心风格：参考低风险成功区间的共同特征，把高 AI 味的浓缩论文句改成更解释性、更像本科生论文的表达。文字可以略有生涩和稚嫩，态度端正，保留学术性，但不要写得太顺、太高级、太像标准润色稿。\n\n必须保留：原文事实、研究对象、术语、数据、公式、引用标记、专有名词和基本论证关系。禁止新增事实、案例、数据、引用、结论或第一人称。禁止“呢、啦、么”等闲聊语气。\n\n改写手法：\n1. 优先把压缩、工整、总结式的长句拆成 2-4 个更朴素的句子；如果原文已经短而清楚，可以只做轻微调整。\n2. 允许比原文长约 20%-35%，用于把过度浓缩的判断解释开；但不能为了凑字加入新信息。\n3. 弱化或替换 AI 和论文模板词，尤其是“显著提升、促进、推动、完善、深度融合、有效路径、提供参考、具有重要意义、赋能、旨在、调研发现、实践参考、理论参考”等。优先改成更普通的说法。\n4. 有控制地加入本科论文常见缓冲表达，如“比较、一些、一定、还、可以、会、里面、方面、情况、来看、过程中、不够、并不、有一部分、相对”等；不要每句话都塞，保持自然分布。\n5. 连接方式要普通，不要统一套“首先、其次、最后、此外、综上”。可以用“从……来看、对……而言、在……中、还有、另外、这样”等较朴素表达。\n6. 可以保留一点不够圆滑的语序和重复，让文字像学生自己整理出来的论文；但不能变成病句、口水话或聊天语气。\n7. 对引用、年份、百分比、观察次数、作者姓名和专业术语必须谨慎保留，不要改错。\n\n输出要求：只输出最终段落纯文本。"
     )
 }
 
-fn legacy_directive_prompt(options: &RewriteOptions) -> String {
+fn legacy_directive_prompt(
+    options: &RewriteOptions,
+    external_report: Option<&ExternalAigcReportEvidence>,
+) -> String {
     let current = options.current_ai_rate.unwrap_or(60.0).clamp(0.0, 100.0);
     let target = options.target_ai_rate.unwrap_or(10.0).clamp(0.0, 100.0);
     let gap = (current - target).max(0.0);
@@ -570,15 +726,44 @@ fn legacy_directive_prompt(options: &RewriteOptions) -> String {
         "中等强度"
     };
 
+    let guidance = external_rewrite_guidance(external_report);
     format!(
         "你是中文论文降 AIGC 改写助手。用户检测到当前 AI 率约为 {current:.0}%，希望降到 {target:.0}% 左右。本数值只用于决定改写强度，不要在输出中提到。当前强度：{intensity}。\n\n先在内部判断原段落的 AI 痕迹，再只输出改写后的段落。不要输出分析、标题、列表、Markdown、规则复述或“修改后：”。\n\n核心风格：把文本写成略有生涩和稚嫩、像中文并不是很精通但态度端正的人写的论文句子；保留一点学术性，但不要太顺、太完整、太统一，也不要像标准润色稿。\n\n必须保留：原文事实、研究对象、术语、数据、公式、引用标记、专有名词和基本论证关系。禁止新增事实、案例、数据、引用、结论或第一人称。禁止“呢、啦、么”等闲聊语气。\n\n改写手法：\n1. 拆分过长句，或把过于整齐的长并列句改成不完全对称的结构；段落之间不要全都用同一种句式。\n2. 替换或弱化 AI 喜欢的词和大款句式，如“具有重要意义、显著提升、有效路径、促进发展、不断完善、深入探讨、现状及对策、为……提供参考”等。\n3. 可以让语序略别扭、连接词朴素一点，保留少量不够圆滑的表达；但不能变成病句或口水话。\n4. 桌面指令里的词表只作为弱参考：使用/采用 可少量改为 运用/选用；基于 可改为 鉴于/依据；通过 可改为 借助/依靠；不要机械逐词替换。\n5. 允许比原文最多长约 10%，但不要为了凑字扩写新信息。\n\n输出要求：只输出最终段落纯文本。"
     )
+    + &guidance
 }
 
-fn sample_calibrated_17_v2_prompt(options: &RewriteOptions) -> String {
-    let base = legacy_directive_prompt(options);
+fn sample_calibrated_17_v2_prompt(
+    options: &RewriteOptions,
+    external_report: Option<&ExternalAigcReportEvidence>,
+) -> String {
+    let base = legacy_directive_prompt(options, external_report);
     format!(
         "{base}\n\n17% 2.0 细调：在不改变上述规则的前提下，比成功链路基线稍微再生涩一点。少用过顺的表达，例如“对于……也有一些作用”“更为紧密一些”“产生作用”；可改成更普通、更笨一点的说法，例如“对……有一点帮助”“结合得更充分一些”“能起到一些帮助”。不要大幅扩写，不要把每段写成解释性长段，不要堆叠“比较、一些、会、情况、过程中”等词。单次长度仍按基线控制，不能为了降低 AIGC 增加新事实、例子、数据或结论。只输出最终段落纯文本。"
+    )
+}
+
+fn external_rewrite_guidance(report: Option<&ExternalAigcReportEvidence>) -> String {
+    let Some(report) = report else {
+        return String::new();
+    };
+    let types = if report.risk_types.is_empty() {
+        "摘要式总结、英文摘要、策略清单、阶段推进、结论总结".to_string()
+    } else {
+        report.risk_types.join("、")
+    };
+    let summary = report
+        .rewrite_guidance
+        .as_deref()
+        .or(report.analysis_summary.as_deref())
+        .unwrap_or("外部报告显示，完整包装感强的摘要、策略和总结段更容易被命中。");
+    format!(
+        "\n\n外部报告反推规则：本地已有 {} 报告证据，命中 {} 个疑似片段、{} 处标注，主要风险类型为：{}。{} 这类报告抓的不是单个词，而是完整包装结构。\n\n当前成功链路以“测试20段后叠加全文”为主：先让部分正文变成较低AI的底稿，再基于这个底稿跑全文。不要把这些成功样本理解成普通一次性整篇直跑。\n\n如果报告显示高疑似片段已经很少或高+中占比很低，后续不要再全篇大扩写，要改成“命中片段精修”：只拆剩余的中低风险包装句，避免把普通段落越改越长。少量高分片段可以存在，关键是降低中风险包装段数量和占比。\n\n遇到以下段落要重点处理：\n- 摘要或研究概述：一段同时写背景、理论、方法、数据、问题、建议和意义。\n- 文献综述：用“综上所述/现有研究不足/基于此”很顺地推出本研究。\n- 理论定义：写成“概念定义 + 作用意义 + 维度体系”的完整说明。\n- 表格或数据解释：一句话把“表格显示、数据一致、原因、结论”全部收束。\n- 条目解释：第三、第四、首先、其次后面接“原因+例子+作用总结”的完整小作文。\n- 案例描述：把品牌案例、设计细节、用户反应和价值判断一口气讲完。\n- 致谢段：情绪表达过完整、作文腔太顺，也可能被报告命中，应改得更平实短促。\n- 策略建议：一是二是三是、三个层面、五项策略、六个维度这类整齐清单。\n- 推进计划：第一阶段、第二阶段、第三阶段，最后形成良性循环。\n\n改写时不要只换词；要拆掉“完整方案/研究验证/提供支持/推动转型/分阶段推进/形成良性循环”这类包装句，改成更具体、更散、更像学生自己解释的表达。可以保留事实、数据和顺序，但不要让句子继续保持背景-方法-结论-意义的一条龙结构；不要新增事实，也不要把短段强行扩成长段。对于表格、得分、比例、引用数据，优先保留数值，改解释方式，不改事实。对于案例段，保留案例事实但删掉统一价值总结；对于致谢段，少用完整抒情句。",
+        report.provider,
+        report.suspicious_segment_count,
+        report.marked_span_count,
+        types,
+        summary
     )
 }
 

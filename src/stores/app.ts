@@ -4,7 +4,11 @@ import { listen } from "@tauri-apps/api/event";
 import type {
   AigcAnalysis,
   AigcCalibrationInput,
+  AigcCalibrationRule,
   AigcCalibrationSample,
+  AigcDetectionSnapshot,
+  AigcFeedbackInput,
+  AigcFeedbackRecord,
   ApiConfig,
   PageName,
   Paragraph,
@@ -13,6 +17,7 @@ import type {
   RewriteResult,
   RewriteScopeStats,
   RewriteSession,
+  TrialEvaluation,
 } from "../types";
 
 interface AppState {
@@ -25,18 +30,30 @@ interface AppState {
   scopeStats: RewriteScopeStats | null;
   detectFilePath: string;
   aigcAnalysis: AigcAnalysis | null;
+  originalSnapshotId: string;
+  originalAigcAnalysis: AigcAnalysis | null;
+  rewrittenSnapshotId: string;
+  rewrittenAigcAnalysis: AigcAnalysis | null;
   aigcCalibrations: AigcCalibrationSample[];
+  detectionSnapshots: AigcDetectionSnapshot[];
+  feedbackRecords: AigcFeedbackRecord[];
+  calibrationRules: AigcCalibrationRule[];
+  sampleIndices: number[];
+  trialEvaluation: TrialEvaluation | null;
+  taskStage: "idle" | "detected" | "trialReady" | "evaluated" | "rewriting" | "completed";
   progressCurrent: number;
   progressTotal: number;
   config: ApiConfig;
   currentAiRate: number;
   targetAiRate: number;
-  activeRewriteKind: "full" | "sample" | "";
+  activeRewriteKind: "full" | "sample" | "stacked" | "";
   cancelRewriteRequested: boolean;
   loading: boolean;
   status: string;
   error: string;
 }
+
+type DetectionTarget = "original" | "rewritten";
 
 const defaultConfig: ApiConfig = {
   apiBase: "https://api.openai.com/v1",
@@ -46,7 +63,7 @@ const defaultConfig: ApiConfig = {
   promptProfile: "sample_calibrated_17_v2",
   detectApiBase: "",
   detectApiKey: "",
-  detectModel: "",
+  detectModel: "gpt-5.4",
 };
 
 const activePromptProfiles = new Set(["sample_calibrated_17_v2", "sample_calibrated_17_success"]);
@@ -66,7 +83,17 @@ export const useAppStore = defineStore("app", {
     scopeStats: null,
     detectFilePath: "",
     aigcAnalysis: null,
+    originalSnapshotId: "",
+    originalAigcAnalysis: null,
+    rewrittenSnapshotId: "",
+    rewrittenAigcAnalysis: null,
     aigcCalibrations: [],
+    detectionSnapshots: [],
+    feedbackRecords: [],
+    calibrationRules: [],
+    sampleIndices: [],
+    trialEvaluation: null,
+    taskStage: "idle",
     progressCurrent: 0,
     progressTotal: 0,
     config: { ...defaultConfig },
@@ -95,6 +122,8 @@ export const useAppStore = defineStore("app", {
     historySessions: (state) => state.sessions.filter(hasHistoryResults),
     currentSession: (state) =>
       state.sessions.find((session) => session.id === state.currentSessionId) ?? null,
+    latestExternalReport: (state) =>
+      state.feedbackRecords.find((record) => record.externalReport)?.externalReport ?? null,
   },
 
   actions: {
@@ -107,9 +136,15 @@ export const useAppStore = defineStore("app", {
         if (!activePromptProfiles.has(loadedConfig.promptProfile)) {
           loadedConfig.promptProfile = "sample_calibrated_17_v2";
         }
+        if (!loadedConfig.detectModel?.trim()) {
+          loadedConfig.detectModel = "gpt-5.4";
+        }
         this.config = loadedConfig;
         this.sessions = await invoke<RewriteSession[]>("load_sessions");
         this.aigcCalibrations = await invoke<AigcCalibrationSample[]>("load_aigc_calibrations");
+        this.detectionSnapshots = await invoke<AigcDetectionSnapshot[]>("load_detection_snapshots");
+        this.feedbackRecords = await invoke<AigcFeedbackRecord[]>("load_feedback_records");
+        this.calibrationRules = await invoke<AigcCalibrationRule[]>("load_calibration_rules");
         const latest = this.sessions.find(hasHistoryResults);
         if (latest) {
           this.applySession(latest);
@@ -130,6 +165,14 @@ export const useAppStore = defineStore("app", {
         this.filePath = filePath;
         this.paragraphs = await invoke<Paragraph[]>("parse_file", { filePath });
         this.results = [];
+        this.aigcAnalysis = null;
+        this.originalSnapshotId = "";
+        this.originalAigcAnalysis = null;
+        this.rewrittenSnapshotId = "";
+        this.rewrittenAigcAnalysis = null;
+        this.sampleIndices = [];
+        this.trialEvaluation = null;
+        this.taskStage = "idle";
         this.progressCurrent = 0;
         this.progressTotal = 0;
         this.currentSessionId = "";
@@ -142,19 +185,28 @@ export const useAppStore = defineStore("app", {
       }
     },
 
+    async startUnifiedTask(filePath: string) {
+      await this.parseFile(filePath);
+      if (!this.error) {
+        await this.analyzeCurrentFileAi();
+      }
+    },
+
     async rewrite(options: RewriteOptions = {}) {
-      const activeKind = options.sampleLimit ? "sample" : "full";
-      const existingResults = options.sampleLimit
+      const activeKind = options.sampleLimit ? "sample" : options.stackedFull ? "stacked" : "full";
+      const sourceParagraphs = options.stackedFull ? this.buildTrialDraftParagraphs() : this.paragraphs;
+      const existingResults = options.sampleLimit || options.stackedFull
         ? []
         : this.results.filter((item) => item.accepted && !item.failed && !item.skipped);
-      const excludeIndices = options.sampleLimit ? [] : existingResults.map((item) => item.index);
+      const excludeIndices = options.sampleLimit || options.stackedFull ? [] : existingResults.map((item) => item.index);
       const rewriteOptions = {
         ...options,
+        externalReport: options.externalReport ?? this.latestExternalReport,
         excludeIndices,
         currentAiRate: this.currentAiRate,
         targetAiRate: this.targetAiRate,
       };
-      const scopeStats = await this.estimateScopeStats(rewriteOptions);
+      const scopeStats = await this.estimateScopeStats(rewriteOptions, sourceParagraphs);
       this.loading = true;
       this.activeRewriteKind = activeKind;
       this.cancelRewriteRequested = false;
@@ -164,7 +216,7 @@ export const useAppStore = defineStore("app", {
       this.progressTotal = scopeStats.selected;
       this.status = `正在调用 API 改写段落 0/${this.progressTotal}`;
       let session = this.currentSession;
-      if (session && !options.sampleLimit && existingResults.length > 0) {
+      if (session && !options.sampleLimit && (existingResults.length > 0 || options.stackedFull)) {
         session = {
           ...session,
           model: this.config.model,
@@ -174,11 +226,19 @@ export const useAppStore = defineStore("app", {
           sampleLimit: null,
           currentAiRate: rewriteOptions.currentAiRate ?? null,
           targetAiRate: rewriteOptions.targetAiRate ?? null,
+          taskType: options.stackedFull
+            ? "stackedFullRewrite"
+            : options.sampleLimit
+              ? "sampleTrial"
+              : options.includeIndices?.length
+                ? "guidedRewrite"
+                : "fullRewrite",
+          paragraphs: sourceParagraphs,
           results: this.results,
           updatedAt: Date.now().toString(),
         };
       } else {
-        session = this.buildSession(this.filePath, this.paragraphs, this.results, rewriteOptions);
+        session = this.buildSession(this.filePath, sourceParagraphs, this.results, rewriteOptions);
       }
       await this.persistSession(session);
       this.applySession(session);
@@ -198,7 +258,7 @@ export const useAppStore = defineStore("app", {
       });
       try {
         const finalResults = await invoke<RewriteResult[]>("rewrite_paragraphs", {
-          paragraphs: this.paragraphs,
+          paragraphs: sourceParagraphs,
           config: this.config,
           options: rewriteOptions,
           session: this.currentSession,
@@ -207,7 +267,11 @@ export const useAppStore = defineStore("app", {
         this.updateCurrentSession({ results: this.results });
         if (this.cancelRewriteRequested) {
           this.status = `已中止，已保留 ${this.results.length} 个段落结果`;
+        } else if (options.sampleLimit) {
+          this.taskStage = "trialReady";
+          await this.evaluateTrialRewrite();
         } else {
+          this.taskStage = "completed";
           this.page = "compare";
         }
       } catch (error) {
@@ -226,10 +290,55 @@ export const useAppStore = defineStore("app", {
     },
 
     async runSampleTest() {
-      const previousProfile = this.config.promptProfile;
       this.config.promptProfile = this.config.promptProfile || "sample_calibrated_17_v2";
-      await this.rewrite({ sampleLimit: 20 });
-      this.config.promptProfile = previousProfile;
+      const includeIndices = await this.refreshSampleIndices(20);
+      await this.rewrite({ sampleLimit: 20, includeIndices });
+    },
+
+    async rewriteStackedFull() {
+      if (!this.results.some((item) => item.accepted && !item.failed && !item.skipped)) {
+        await this.runSampleTest();
+        return;
+      }
+      await this.rewrite({ stackedFull: true });
+    },
+
+    async evaluateTrialRewrite() {
+      if (!this.results.length) {
+        return;
+      }
+      this.loading = true;
+      this.error = "";
+      this.status = "正在评估测试20段效果";
+      try {
+        this.trialEvaluation = await invoke<TrialEvaluation>("evaluate_trial_rewrite", {
+          config: this.config,
+          input: {
+            analysis: this.aigcAnalysis,
+            paragraphs: this.paragraphs,
+            results: this.results,
+            promptProfile: this.config.promptProfile,
+            currentAiRate: this.currentAiRate,
+            targetAiRate: this.targetAiRate,
+            trialTargetAigc: this.trialTargetAigc(),
+          },
+        });
+        if (this.trialEvaluation.recommendedProfile) {
+          this.config.promptProfile = this.trialEvaluation.recommendedProfile;
+        }
+        if (this.trialEvaluation.recommendedCurrentAiRate != null) {
+          this.currentAiRate = this.trialEvaluation.recommendedCurrentAiRate;
+        }
+        if (this.trialEvaluation.recommendedTargetAiRate != null) {
+          this.targetAiRate = this.trialEvaluation.recommendedTargetAiRate;
+        }
+        this.taskStage = "evaluated";
+        this.status = "试跑评估完成";
+      } catch (error) {
+        this.error = String(error);
+      } finally {
+        this.loading = false;
+      }
     },
 
     async cancelRewrite() {
@@ -296,17 +405,27 @@ export const useAppStore = defineStore("app", {
           if (active) {
             this.applySession(active);
           }
+          await this.analyzeExportedDocx(exportedPath);
         } else {
-          await invoke<string>("export_docx", {
+          const exportedPath = await invoke<string>("export_docx", {
             results: this.results,
             outputPath,
           });
+          await this.analyzeExportedDocx(exportedPath);
         }
-        this.status = "导出完成";
+        this.status = "导出完成，已自动检测导出稿";
       } catch (error) {
         this.error = String(error);
       } finally {
         this.loading = false;
+      }
+    },
+
+    async analyzeExportedDocx(filePath: string) {
+      try {
+        await this.runAiDetection(filePath, "rewritten");
+      } catch (error) {
+        this.status = `导出完成，但自动检测导出稿失败：${String(error)}`;
       }
     },
 
@@ -357,11 +476,8 @@ export const useAppStore = defineStore("app", {
       this.error = "";
       this.status = "正在 AI 混合检测 AIGC 风险";
       try {
-        this.detectFilePath = filePath;
-        this.aigcAnalysis = await invoke<AigcAnalysis>("analyze_aigc_file_ai", {
-          filePath,
-          config: this.config,
-        });
+        await this.runAiDetection(filePath, "original");
+        this.taskStage = "detected";
         this.page = "detect";
       } catch (error) {
         this.error = String(error);
@@ -369,6 +485,44 @@ export const useAppStore = defineStore("app", {
         this.loading = false;
         this.status = "";
       }
+    },
+
+    async analyzeCurrentFileAi() {
+      if (!this.filePath) {
+        return;
+      }
+      this.loading = true;
+      this.error = "";
+      this.status = "正在 AI 混合检测 AIGC 风险";
+      try {
+        await this.runAiDetection(this.filePath, "original");
+        this.taskStage = "detected";
+      } catch (error) {
+        this.error = String(error);
+      } finally {
+        this.loading = false;
+        this.status = "";
+      }
+    },
+
+    async runAiDetection(filePath: string, target: DetectionTarget) {
+      this.detectFilePath = filePath;
+      const analysis = await invoke<AigcAnalysis>("analyze_aigc_file_ai", {
+        filePath,
+        config: this.config,
+      });
+      this.detectionSnapshots = await invoke<AigcDetectionSnapshot[]>("load_detection_snapshots");
+      const snapshotId = this.findSnapshotId(filePath, analysis);
+      if (target === "original") {
+        this.aigcAnalysis = analysis;
+        this.originalAigcAnalysis = analysis;
+        this.originalSnapshotId = snapshotId || this.originalSnapshotId;
+        await this.refreshSampleIndices(20);
+      } else {
+        this.rewrittenAigcAnalysis = analysis;
+        this.rewrittenSnapshotId = snapshotId || this.rewrittenSnapshotId;
+      }
+      return analysis;
     },
 
     async loadAigcCalibrations() {
@@ -415,6 +569,47 @@ export const useAppStore = defineStore("app", {
       }
     },
 
+    async saveFeedbackRecord(input: AigcFeedbackInput) {
+      this.loading = true;
+      this.error = "";
+      this.status = "正在保存 PP 实测反馈";
+      try {
+        this.feedbackRecords = await invoke<AigcFeedbackRecord[]>("save_feedback_record", {
+          config: this.config,
+          input,
+        });
+        this.calibrationRules = await invoke<AigcCalibrationRule[]>("load_calibration_rules");
+        this.detectionSnapshots = await invoke<AigcDetectionSnapshot[]>("load_detection_snapshots");
+        this.status = "PP 实测反馈已保存";
+      } catch (error) {
+        this.error = String(error);
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    findSnapshotId(filePath: string, analysis: AigcAnalysis) {
+      const fileName = filePath.split("/").pop() || analysis.fileName;
+      return (
+        this.detectionSnapshots.find(
+          (snapshot) =>
+            snapshot.filePath === filePath &&
+            snapshot.analysis.estimatedAigc === analysis.estimatedAigc,
+        )?.id ||
+        this.detectionSnapshots.find((snapshot) => snapshot.filePath === filePath)?.id ||
+        this.detectionSnapshots.find((snapshot) => snapshot.fileName === fileName)?.id ||
+        ""
+      );
+    },
+
+    trialTargetAigc() {
+      const baseline =
+        this.originalAigcAnalysis?.estimatedAigc ??
+        this.aigcAnalysis?.estimatedAigc ??
+        this.currentAiRate;
+      return Math.max(0, Math.round((baseline - 15) * 10) / 10);
+    },
+
     applySession(session: RewriteSession) {
       this.currentSessionId = session.id;
       this.filePath = session.filePath;
@@ -427,8 +622,22 @@ export const useAppStore = defineStore("app", {
       this.scopeStats = await this.estimateScopeStats(options);
     },
 
-    async estimateScopeStats(options: RewriteOptions = {}) {
+    async refreshSampleIndices(limit = 20) {
       if (this.paragraphs.length === 0) {
+        this.sampleIndices = [];
+        return [];
+      }
+      this.sampleIndices = await invoke<number[]>("select_sample_indices", {
+        paragraphs: this.paragraphs,
+        analysis: this.aigcAnalysis,
+        limit,
+      });
+      return this.sampleIndices;
+    },
+
+    async estimateScopeStats(options: RewriteOptions = {}, paragraphs?: Paragraph[]) {
+      const sourceParagraphs = paragraphs ?? this.paragraphs;
+      if (sourceParagraphs.length === 0) {
         return {
           total: 0,
           selected: 0,
@@ -438,9 +647,21 @@ export const useAppStore = defineStore("app", {
       }
 
       return await invoke<RewriteScopeStats>("estimate_rewrite_scope", {
-        paragraphs: this.paragraphs,
+        paragraphs: sourceParagraphs,
         options,
       });
+    },
+
+    buildTrialDraftParagraphs() {
+      const replacements = new Map(
+        this.results
+          .filter((item) => item.accepted && !item.failed && !item.skipped)
+          .map((item) => [item.index, item.rewritten]),
+      );
+      return this.paragraphs.map((paragraph) => ({
+        ...paragraph,
+        text: replacements.get(paragraph.index) ?? paragraph.text,
+      }));
     },
 
     buildSession(
@@ -464,6 +685,13 @@ export const useAppStore = defineStore("app", {
         sampleLimit: options.sampleLimit ?? null,
         currentAiRate: options.currentAiRate ?? null,
         targetAiRate: options.targetAiRate ?? null,
+        taskType: options.stackedFull
+          ? "stackedFullRewrite"
+          : options.sampleLimit
+            ? "sampleTrial"
+            : options.includeIndices?.length
+              ? "guidedRewrite"
+              : "fullRewrite",
         paragraphs,
         results,
         exportedPath: null,
@@ -485,5 +713,6 @@ export const useAppStore = defineStore("app", {
         updatedAt: Date.now().toString(),
       };
     },
+
   },
 });

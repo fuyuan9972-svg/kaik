@@ -1,6 +1,6 @@
 use crate::models::{
-    AiAigcAssessment, AiAigcParagraphScore, AigcAnalysis, AigcCalibrationSample, ApiConfig,
-    Paragraph,
+    AiAigcAssessment, AiAigcParagraphScore, AigcAnalysis, AigcCalibrationSample,
+    AigcFeedbackRecord, ApiConfig, Paragraph,
 };
 use anyhow::{bail, Context};
 use reqwest::Client;
@@ -44,6 +44,7 @@ pub async fn analyze_file_with_fallback(
     config: &ApiConfig,
     file_path: &str,
     user_samples: &[AigcCalibrationSample],
+    feedback_records: &[AigcFeedbackRecord],
 ) -> anyhow::Result<AigcAnalysis> {
     let paragraphs = crate::parser::parse_file(file_path)?;
     let local = crate::aigc_detector::analyze_paragraphs(file_path, &paragraphs, user_samples);
@@ -54,7 +55,16 @@ pub async fn analyze_file_with_fallback(
         ));
     }
 
-    match assess_with_ai(client, config, &local, &paragraphs, user_samples).await {
+    match assess_with_ai(
+        client,
+        config,
+        &local,
+        &paragraphs,
+        user_samples,
+        feedback_records,
+    )
+    .await
+    {
         Ok(assessment) => Ok(crate::aigc_detector::merge_ai_assessment(local, assessment)),
         Err(error) => Ok(crate::aigc_detector::with_ai_error(
             local,
@@ -69,13 +79,14 @@ async fn assess_with_ai(
     local: &AigcAnalysis,
     paragraphs: &[Paragraph],
     user_samples: &[AigcCalibrationSample],
+    feedback_records: &[AigcFeedbackRecord],
 ) -> anyhow::Result<AiAigcAssessment> {
     let samples = select_samples(paragraphs, local);
     if samples.is_empty() {
         bail!("没有可用于 AI 检测的正文段落");
     }
 
-    let prompt = ai_detection_prompt(local, user_samples);
+    let prompt = ai_detection_prompt(local, user_samples, feedback_records);
     let user_content = serde_json::json!({
         "fileName": local.file_name,
         "localEstimate": {
@@ -150,49 +161,87 @@ fn select_samples(paragraphs: &[Paragraph], local: &AigcAnalysis) -> Vec<AiSampl
         .collect()
 }
 
-fn ai_detection_prompt(local: &AigcAnalysis, user_samples: &[AigcCalibrationSample]) -> String {
-    let mut calibration = vec![
-        "513原稿=61.7，高AI模板明显",
-        "513成功稿=17.0，适度解释拆句但不太顺",
-        "513 fn11=18.41，成功链路基线",
-        "513 fn8=30.81，过度扩写后卡在30%左右",
-        "史斯颖原稿=26.85，中低AI原稿，不应按高AI处理",
-        "史斯颖fn1=9.5，短句化、压短、表达略笨拙，强成功",
-        "史斯颖fn2=16.74，基线稿更完整顺滑，仍成功但高于fn1",
-    ]
-    .join("\n- ");
-    if !user_samples.is_empty() {
-        let extra = user_samples
-            .iter()
-            .take(8)
-            .map(|sample| {
-                format!(
-                    "{}={}，{}{}",
-                    sample.file_name,
-                    sample.measured_aigc,
-                    sample
-                        .strategy
-                        .clone()
-                        .unwrap_or_else(|| "本地录入".to_string()),
-                    sample
-                        .round
-                        .as_ref()
-                        .map(|round| format!("，{round}"))
-                        .unwrap_or_default()
-                )
-            })
-            .collect::<Vec<_>>()
-            .join("\n- ");
-        calibration.push_str("\n- ");
-        calibration.push_str(&extra);
-    }
+fn ai_detection_prompt(
+    local: &AigcAnalysis,
+    user_samples: &[AigcCalibrationSample],
+    feedback_records: &[AigcFeedbackRecord],
+) -> String {
+    let calibration = calibration_brief(user_samples);
+    let external_guidance = crate::calibration::external_report_guidance(feedback_records);
+    let external_section = if external_guidance.is_empty() {
+        "暂无维普等外部报告片段证据。".to_string()
+    } else {
+        external_guidance
+    };
 
     format!(
-        "你是 PaperPass 风格 AIGC 检测助手。你不是通用 AI 文本检测器，要按用户已经实测过的 PaperPass 经验来判断。\n\n已知校准样本：\n- {calibration}\n\n当前本地快速检测：估算 {local_estimate:.1}%，画像 {profile}，风险等级 {risk_level}。\n\n判断重点：\n1. 不要只看词表。句子过顺、过完整、过像标准论文润色稿，可能偏高。\n2. AI套话、万能意义句、模板连接词会提高风险。\n3. 过度扩写、解释腔、缓冲词堆叠会提高风险。\n4. 短句化、生涩、普通但仍学术，有时会显著降低风险。\n5. 中低AI原稿不能按高AI原稿处理；如果文本已经自然，不要因为朴素词少就判很高。\n\n用户会给你 JSON，包含本地指标和抽样正文段。请只返回一个 JSON 对象，不要 Markdown，不要解释。\nJSON 结构必须是：\n{{\n  \"estimatedAigc\": 0-100数字,\n  \"rangeLow\": 0-100数字,\n  \"rangeHigh\": 0-100数字,\n  \"confidence\": 0-100数字,\n  \"profile\": \"原稿高AI|中低AI原稿|改写不足|过度扩写|接近成功稿|强成功稿|中等风险\",\n  \"summary\": \"一句中文总结\",\n  \"nextAction\": \"一句中文建议\",\n  \"reasons\": [\"原因1\", \"原因2\"],\n  \"paragraphScores\": [{{\"index\": 段落index, \"risk\": 0-100数字, \"profile\": \"段落画像\", \"reasons\": [\"原因\"]}}]\n}}\n\n如果判断不确定，扩大区间并降低 confidence；不要编造 PaperPass 官方规则。",
+        "你是 AIGC 检测助手。你不是通用 AI 文本检测器，要按用户已经实测过的 PaperPass/维普经验来判断。\n\n本地 PP/维普校准库摘要：\n{calibration}\n\n外部报告片段证据：\n{external_section}\n\n当前本地快速检测：估算 {local_estimate:.1}%，画像 {profile}，风险等级 {risk_level}。\n\n判断重点：\n1. 不要把某一篇论文当模板；只按指标、抽样正文、校准区间和外部报告命中类型判断。\n2. 不要只看词表。句子过顺、过完整、过像标准论文润色稿，可能偏高。\n3. AI套话、万能意义句、模板连接词会提高风险。\n4. 过度扩写、解释腔、缓冲词堆叠会提高风险。\n5. 短句化、生涩、普通但仍学术，有时会显著降低风险。\n6. 中低AI原稿不能按高AI原稿处理；如果文本已经自然，不要因为朴素词少就判很高。\n7. 重点识别维普报告已命中的“完整包装段”：摘要一段塞进背景、理论、方法、数据、问题、建议、意义；文献综述后用“综上所述/基于此”引出研究；理论定义段写成概念定义+作用意义+维度体系；策略段写成一是二是三是或第一阶段第二阶段第三阶段；结尾写成构建方案、提供支持、推动转型、形成良性循环。\n8. 如果抽样段落接近这些结构，要提高段落风险并说明是摘要式总包、理论定义包、策略清单包、阶段推进包还是意义闭环包。\n\n用户会给你 JSON，包含本地指标和抽样正文段。请只返回一个 JSON 对象，不要 Markdown，不要解释。\nJSON 结构必须是：\n{{\n  \"estimatedAigc\": 0-100数字,\n  \"rangeLow\": 0-100数字,\n  \"rangeHigh\": 0-100数字,\n  \"confidence\": 0-100数字,\n  \"profile\": \"高AI模板稿|中低AI原稿|改写不足|过度扩写|低风险成功区间|强成功区间|中等风险\",\n  \"summary\": \"一句中文总结\",\n  \"nextAction\": \"一句中文建议\",\n  \"reasons\": [\"原因1\", \"原因2\"],\n  \"paragraphScores\": [{{\"index\": 段落index, \"risk\": 0-100数字, \"profile\": \"段落画像\", \"reasons\": [\"原因\"]}}]\n}}\n\n如果判断不确定，扩大区间并降低 confidence；不要编造 PaperPass 或维普官方规则。",
         local_estimate = local.estimated_aigc,
         profile = local.profile,
         risk_level = local.risk_level
     )
+}
+
+fn calibration_brief(user_samples: &[AigcCalibrationSample]) -> String {
+    let mut lines = vec![
+        "- 强成功区间（约 0%-15%）：通常短句化更明显，表达偏朴素，套话少，可能略生涩，但没有大量解释腔。".to_string(),
+        "- 低风险成功区间（约 15%-22%）：仍保持论文语气，但句子不太顺滑，AI套话低，普通连接和轻微不圆滑表达较多。".to_string(),
+        "- 中风险区间（约 22%-35%）：常见于改写有效但扩写偏多，或解释腔、缓冲词密度开始升高的文本。".to_string(),
+        "- 改写不足区间（约 35%-55%）：文本已经动过，但仍保留模板词、顺滑长句和标准总结式表达。".to_string(),
+        "- 高风险区间（约 55%+）：AI套话和浓缩论文句明显，表达规整，朴素表达不足。".to_string(),
+    ];
+    let bins = sample_bins(user_samples);
+    if !bins.is_empty() {
+        lines.push("- 用户新增外部实测分布：".to_string());
+        for bin in bins {
+            lines.push(bin);
+        }
+    }
+    lines.join("\n")
+}
+
+fn sample_bins(user_samples: &[AigcCalibrationSample]) -> Vec<String> {
+    let ranges = [
+        ("0%-15%", 0.0, 15.0),
+        ("15%-22%", 15.0, 22.0),
+        ("22%-35%", 22.0, 35.0),
+        ("35%-55%", 35.0, 55.0),
+        ("55%+", 55.0, 100.0),
+    ];
+    ranges
+        .iter()
+        .filter_map(|(label, low, high)| {
+            let values: Vec<&AigcCalibrationSample> = user_samples
+                .iter()
+                .filter(|sample| sample.measured_aigc >= *low && sample.measured_aigc <= *high)
+                .collect();
+            if values.is_empty() {
+                return None;
+            }
+            let avg = values.iter().map(|sample| sample.measured_aigc).sum::<f32>()
+                / values.len() as f32;
+            Some(format!(
+                "  - {label}：{} 条，PP均值 {:.1}%，平均段长 {:.1}，平均句长 {:.1}，AI套话/万字 {:.1}",
+                values.len(),
+                avg,
+                values
+                    .iter()
+                    .map(|sample| sample.metrics.avg_paragraph_len)
+                    .sum::<f32>()
+                    / values.len() as f32,
+                values
+                    .iter()
+                    .map(|sample| sample.metrics.avg_sentence_len)
+                    .sum::<f32>()
+                    / values.len() as f32,
+                values
+                    .iter()
+                    .map(|sample| sample.metrics.ai_terms_per_10k)
+                    .sum::<f32>()
+                    / values.len() as f32
+            ))
+        })
+        .collect()
 }
 
 fn parse_ai_json(output: &str) -> anyhow::Result<RawAiAssessment> {

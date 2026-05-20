@@ -36,6 +36,11 @@ function modeLabel(value?: string) {
   return "本地快速检测";
 }
 
+function correctionText(value?: number | null) {
+  if (value == null) return "暂无PP校准";
+  return `PP校准 ${value > 0 ? "+" : ""}${value.toFixed(2)}`;
+}
+
 async function saveCalibration() {
   if (!store.detectFilePath || !measuredValid.value) return;
   const plagiarismRate =
@@ -84,12 +89,17 @@ async function saveCalibration() {
     <template v-else>
       <section class="analysis-grid">
         <article class="score-card">
-          <span>预计 AI 率</span>
+          <span>校准后 AI 率</span>
           <strong>{{ formatPercent(analysis.estimatedAigc) }}</strong>
           <small>
             {{ modeLabel(analysis.detectionMode) }} · 区间 {{ formatPercent(analysis.rangeLow) }} -
             {{ formatPercent(analysis.rangeHigh) }}
           </small>
+        </article>
+        <article class="score-card">
+          <span>原始 AI 混合</span>
+          <strong>{{ formatPercent(analysis.uncalibratedEstimatedAigc ?? analysis.estimatedAigc) }}</strong>
+          <small>{{ correctionText(analysis.calibrationCorrection) }}</small>
         </article>
         <article class="score-card">
           <span>风险等级</span>
@@ -100,7 +110,7 @@ async function saveCalibration() {
           <span>置信度</span>
           <strong>{{ formatPercent(analysis.confidence) }}</strong>
           <small v-if="analysis.localEstimatedAigc != null">本地 {{ formatPercent(analysis.localEstimatedAigc) }}</small>
-          <small v-else>样本越多越准</small>
+          <small v-else>PP反馈越多越准</small>
         </article>
       </section>
 
@@ -125,6 +135,7 @@ async function saveCalibration() {
           <h2>{{ analysis.fileName }}</h2>
           <p>{{ analysis.summary }}</p>
           <p>{{ analysis.nextAction }}</p>
+          <p v-if="analysis.calibrationSummary">{{ analysis.calibrationSummary }}</p>
         </div>
         <div class="metric-grid detector-metrics">
           <div>
@@ -164,7 +175,7 @@ async function saveCalibration() {
 
       <section class="detect-columns">
         <article class="panel analysis-section">
-          <h2>最相似样本</h2>
+          <h2>相近指标区间</h2>
           <div class="sample-list">
             <div v-for="sample in analysis.similarSamples" :key="sample.fileName" class="sample-row">
               <span>
@@ -197,7 +208,7 @@ async function saveCalibration() {
             </label>
             <label class="wide">
               <span>备注</span>
-              <input v-model="draft.note" placeholder="例如：基于 fn11 二次处理" />
+              <input v-model="draft.note" placeholder="例如：测试20后整篇 / 二次全文处理" />
             </label>
           </div>
           <button

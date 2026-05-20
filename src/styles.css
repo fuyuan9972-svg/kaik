@@ -575,6 +575,14 @@ mark {
   gap: 12px;
 }
 
+.calibration-page .analysis-grid {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.analysis-grid.compact {
+  margin-top: 12px;
+}
+
 .score-card {
   display: grid;
   gap: 6px;
@@ -593,6 +601,10 @@ mark {
   color: #172026;
   font-size: 30px;
   letter-spacing: 0;
+}
+
+.analysis-grid.compact .score-card strong {
+  font-size: 24px;
 }
 
 .analysis-section {
@@ -659,6 +671,30 @@ mark {
   white-space: nowrap;
 }
 
+.bin-grid {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.bin-grid div {
+  display: grid;
+  gap: 3px;
+  padding: 12px;
+  border-radius: 8px;
+  background: #f3f6f8;
+}
+
+.bin-grid span {
+  color: #667788;
+  font-size: 12px;
+}
+
+.bin-grid strong {
+  color: #172026;
+  font-size: 22px;
+}
+
 .calibration-form {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -716,6 +752,109 @@ mark {
 
 .calibration-row {
   grid-template-columns: minmax(0, 1fr) auto;
+}
+
+.task-analysis-card {
+  display: grid;
+  gap: 12px;
+  margin-bottom: 18px;
+  padding: 14px;
+  border: 1px solid #d8e0e7;
+  border-radius: 8px;
+  background: #fbfcfd;
+}
+
+.task-flow-card {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-bottom: 18px;
+}
+
+.flow-step {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 2px 10px;
+  align-items: center;
+  padding: 12px;
+  border: 1px solid #d8e0e7;
+  border-radius: 8px;
+  background: #ffffff;
+}
+
+.flow-step strong {
+  display: grid;
+  width: 28px;
+  height: 28px;
+  grid-row: span 2;
+  place-items: center;
+  border-radius: 999px;
+  color: #637381;
+  background: #edf2f5;
+}
+
+.flow-step span {
+  color: #172026;
+  font-weight: 800;
+}
+
+.flow-step small {
+  color: #667788;
+}
+
+.flow-step.active {
+  border-color: #1f6f68;
+  background: #f2faf8;
+}
+
+.flow-step.active strong,
+.flow-step.done strong {
+  color: #ffffff;
+  background: #1f6f68;
+}
+
+.task-analysis-card p {
+  color: #52616f;
+  font-size: 13px;
+}
+
+.trial-verdict {
+  display: grid;
+  gap: 4px;
+  padding: 14px;
+  border-radius: 8px;
+  background: #eef7f5;
+}
+
+.trial-verdict strong {
+  color: #1f6f68;
+  font-size: 22px;
+}
+
+.trial-verdict span {
+  color: #52616f;
+}
+
+.calibration-page {
+  max-width: 1180px;
+}
+
+.compact-empty {
+  min-height: 150px;
+}
+
+.compact-empty > div {
+  display: grid;
+  justify-items: center;
+  gap: 8px;
+}
+
+.compact-empty strong {
+  color: #26343d;
+}
+
+.feedback-row {
+  align-items: flex-start;
 }
 
 .settings-page {

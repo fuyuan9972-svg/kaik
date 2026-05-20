@@ -1,11 +1,13 @@
 mod ai_aigc_detector;
 pub mod aigc_detector;
+mod calibration;
 mod commands;
 mod config;
 mod exporter;
 mod models;
 mod parser;
 mod rewriter;
+mod trial_evaluator;
 
 pub fn run() {
     tauri::Builder::default()
@@ -16,6 +18,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             commands::parse_file,
             commands::estimate_rewrite_scope,
+            commands::select_sample_indices,
             commands::rewrite_paragraphs,
             commands::cancel_rewrite,
             commands::test_connection,
@@ -33,7 +36,12 @@ pub fn run() {
             commands::analyze_aigc_file_ai,
             commands::load_aigc_calibrations,
             commands::save_aigc_calibration,
-            commands::delete_aigc_calibration
+            commands::delete_aigc_calibration,
+            commands::evaluate_trial_rewrite,
+            commands::load_detection_snapshots,
+            commands::load_feedback_records,
+            commands::save_feedback_record,
+            commands::load_calibration_rules
         ])
         .run(tauri::generate_context!())
         .expect("failed to run tauri app");

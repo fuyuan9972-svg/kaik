@@ -1,6 +1,6 @@
 use crate::models::{
-    AiAigcAssessment, AigcAnalysis, AigcCalibrationSample, AigcMetrics, AigcParagraphRisk,
-    AigcSimilarSample, Paragraph,
+    AiAigcAssessment, AigcAnalysis, AigcCalibrationRule, AigcCalibrationSample, AigcMetrics,
+    AigcParagraphRisk, AigcSimilarSample, Paragraph,
 };
 use std::{cmp::Ordering, path::Path};
 
@@ -66,6 +66,38 @@ const CONNECTORS: &[&str] = &[
     "基于", "为了",
 ];
 
+const VIP_REPORT_TERMS: &[&str] = &[
+    "本研究基于",
+    "本研究主要包括",
+    "提出优化建议",
+    "提出三项优化",
+    "提出优化策略",
+    "这些策略",
+    "构建了",
+    "构建",
+    "完整方案",
+    "研究验证了",
+    "提供了数据支持",
+    "提供数据支持",
+    "未来可",
+    "服务质量",
+    "差异化竞争",
+    "关键",
+    "核心概念",
+    "整体感知",
+    "综合评价体系",
+    "为策略落地提供",
+    "三个阶段",
+    "分阶段",
+    "综合以上分析",
+    "第一阶段",
+    "第二阶段",
+    "第三阶段",
+    "良性循环",
+    "速赢策略",
+    "长效机制",
+];
+
 pub fn analyze_file(
     file_path: &str,
     user_samples: &[AigcCalibrationSample],
@@ -109,6 +141,10 @@ pub fn analyze_paragraphs(
         similar_samples: similar_samples.into_iter().take(5).collect(),
         paragraph_risks: paragraph_risks(paragraphs),
         local_estimated_aigc: None,
+        uncalibrated_estimated_aigc: None,
+        calibration_correction: None,
+        calibration_summary: None,
+        calibration_sample_count: None,
         ai_assessment: None,
         ai_error: None,
         detection_mode: "local".to_string(),
@@ -126,6 +162,7 @@ pub fn merge_ai_assessment(mut local: AigcAnalysis, ai: AiAigcAssessment) -> Aig
 
     local.local_estimated_aigc = Some(local_score);
     local.estimated_aigc = round1(estimated);
+    local.uncalibrated_estimated_aigc = Some(round1(estimated));
     local.range_low = round1((estimated - spread).max(0.0).min(ai.range_low.max(0.0)));
     local.range_high = round1(
         (estimated + spread)
@@ -146,8 +183,132 @@ pub fn merge_ai_assessment(mut local: AigcAnalysis, ai: AiAigcAssessment) -> Aig
     local
 }
 
+pub fn apply_calibration_rules(
+    mut analysis: AigcAnalysis,
+    rules: &[AigcCalibrationRule],
+) -> AigcAnalysis {
+    let correction = blended_correction(&analysis, rules);
+    if correction.abs() < 0.01 {
+        return analysis;
+    }
+
+    let before = analysis.estimated_aigc;
+    let bounded_correction = correction.clamp(-18.0, 18.0);
+    let after = (before + bounded_correction).clamp(0.0, 100.0);
+    let range_low = (analysis.range_low + bounded_correction).clamp(0.0, 100.0);
+    let range_high = (analysis.range_high + bounded_correction).clamp(0.0, 100.0);
+    let sample_count = rules
+        .iter()
+        .map(|rule| rule.sample_count)
+        .max()
+        .unwrap_or(0);
+    let summary = calibration_summary(rules, bounded_correction, sample_count);
+
+    analysis.uncalibrated_estimated_aigc = Some(round1(before));
+    analysis.calibration_correction = Some(round2(bounded_correction));
+    analysis.calibration_summary = Some(summary.clone());
+    analysis.calibration_sample_count = Some(sample_count);
+    analysis.estimated_aigc = round1(after);
+    analysis.range_low = round1(range_low.min(range_high));
+    analysis.range_high = round1(range_high.max(range_low));
+    analysis.risk_level = classify_risk_level(analysis.estimated_aigc, &analysis.profile);
+    analysis.summary = format!(
+        "{} 校准库根据 PP 反馈修正 {:.2} 个百分点，当前显示为校准后估算。",
+        analysis.summary, bounded_correction
+    );
+    analysis.next_action = format!("{} {}", analysis.next_action, summary);
+    analysis
+}
+
+fn blended_correction(analysis: &AigcAnalysis, rules: &[AigcCalibrationRule]) -> f32 {
+    let mut weighted = 0.0;
+    let mut weight_sum = 0.0;
+    for rule in rules {
+        if rule.sample_count == 0 {
+            continue;
+        }
+        if is_bucket_rule(rule) && !matches_bucket_rule(analysis, rule) {
+            continue;
+        }
+        if rule.id == "successful-report-overestimate"
+            && !matches_successful_report_overestimate_profile(analysis)
+        {
+            continue;
+        }
+        if rule.id == "low-ratio-success-report" && !matches_low_ratio_success_profile(analysis) {
+            continue;
+        }
+        let weight = (rule.confidence / 100.0).clamp(0.15, 1.0) * rule.sample_count as f32;
+        weighted += rule.correction * weight;
+        weight_sum += weight;
+    }
+    if weight_sum == 0.0 {
+        0.0
+    } else {
+        weighted / weight_sum
+    }
+}
+
+fn is_bucket_rule(rule: &AigcCalibrationRule) -> bool {
+    matches!(
+        rule.id.as_str(),
+        "bucket-low-aigc" | "bucket-mid-aigc" | "bucket-high-aigc"
+    )
+}
+
+fn matches_bucket_rule(analysis: &AigcAnalysis, rule: &AigcCalibrationRule) -> bool {
+    match rule.id.as_str() {
+        "bucket-low-aigc" => analysis.estimated_aigc < 24.0,
+        "bucket-mid-aigc" => analysis.estimated_aigc >= 20.0 && analysis.estimated_aigc < 48.0,
+        "bucket-high-aigc" => analysis.estimated_aigc >= 42.0,
+        _ => false,
+    }
+}
+
+fn matches_successful_report_overestimate_profile(analysis: &AigcAnalysis) -> bool {
+    let metrics = &analysis.metrics;
+    analysis.estimated_aigc >= 24.0
+        && analysis.estimated_aigc <= 42.0
+        && metrics.ai_terms_per_10k <= 4.0
+        && metrics.connectors_per_10k <= 32.0
+        && metrics.plain_terms_per_10k >= 180.0
+        && metrics.avg_sentence_len <= 42.0
+        && metrics.avg_paragraph_len <= 210.0
+}
+
+fn matches_low_ratio_success_profile(analysis: &AigcAnalysis) -> bool {
+    let metrics = &analysis.metrics;
+    analysis.estimated_aigc >= 18.0
+        && analysis.estimated_aigc <= 36.0
+        && metrics.ai_terms_per_10k <= 5.0
+        && metrics.connectors_per_10k <= 36.0
+        && metrics.plain_terms_per_10k >= 170.0
+        && metrics.avg_sentence_len <= 48.0
+        && metrics.avg_paragraph_len <= 230.0
+}
+
+fn calibration_summary(
+    rules: &[AigcCalibrationRule],
+    correction: f32,
+    sample_count: usize,
+) -> String {
+    let direction = if correction > 0.0 { "上修" } else { "下修" };
+    let rule_summary = rules
+        .first()
+        .map(|rule| rule.summary.clone())
+        .unwrap_or_else(|| "校准库已参与本次估算。".to_string());
+    format!(
+        "已按 {} 条外部实测反馈{} {:.2} 个百分点；{}",
+        sample_count,
+        direction,
+        correction.abs(),
+        rule_summary
+    )
+}
+
 pub fn with_ai_error(mut local: AigcAnalysis, error: String) -> AigcAnalysis {
     local.local_estimated_aigc = Some(local.estimated_aigc);
+    local.uncalibrated_estimated_aigc = Some(local.estimated_aigc);
     local.ai_error = Some(error);
     local.detection_mode = "ai_mixed_failed".to_string();
     local
@@ -224,7 +385,7 @@ fn calibration_samples(user_samples: &[AigcCalibrationSample]) -> Vec<Calibratio
 fn builtin_calibration_samples() -> Vec<CalibrationPoint> {
     vec![
         point(
-            "高晓论文完整fn.docx",
+            "历史低风险成功样本A",
             17.0,
             57,
             13664,
@@ -237,7 +398,7 @@ fn builtin_calibration_samples() -> Vec<CalibrationPoint> {
             35.13,
         ),
         point(
-            "高晓论文完整修改513_fn11.docx",
+            "历史低风险成功样本B",
             18.41,
             57,
             13761,
@@ -250,7 +411,7 @@ fn builtin_calibration_samples() -> Vec<CalibrationPoint> {
             34.15,
         ),
         point(
-            "高晓论文完整修改513_fn4.docx",
+            "历史中风险扩写样本A",
             27.8,
             57,
             16806,
@@ -263,7 +424,7 @@ fn builtin_calibration_samples() -> Vec<CalibrationPoint> {
             36.89,
         ),
         point(
-            "高晓论文完整修改513-fn9.docx",
+            "历史中风险扩写样本B",
             27.83,
             57,
             20589,
@@ -276,7 +437,7 @@ fn builtin_calibration_samples() -> Vec<CalibrationPoint> {
             32.54,
         ),
         point(
-            "高晓论文完整修改513_整篇fn.docx",
+            "历史中风险改写样本A",
             28.8,
             57,
             16227,
@@ -289,7 +450,7 @@ fn builtin_calibration_samples() -> Vec<CalibrationPoint> {
             42.52,
         ),
         point(
-            "高晓论文完整修改513-fn8.docx",
+            "历史中风险扩写样本C",
             30.81,
             57,
             15846,
@@ -302,7 +463,7 @@ fn builtin_calibration_samples() -> Vec<CalibrationPoint> {
             32.82,
         ),
         point(
-            "高晓论文完整修改513_fn10.docx",
+            "历史中风险扩写样本D",
             32.03,
             57,
             17424,
@@ -315,7 +476,7 @@ fn builtin_calibration_samples() -> Vec<CalibrationPoint> {
             32.71,
         ),
         point(
-            "高晓论文完整修改513_fn3.docx",
+            "历史改写不足样本A",
             43.0,
             57,
             14041,
@@ -328,7 +489,7 @@ fn builtin_calibration_samples() -> Vec<CalibrationPoint> {
             50.57,
         ),
         point(
-            "高晓论文完整修改513_fn7.docx",
+            "历史改写不足样本B",
             45.2,
             57,
             12505,
@@ -341,7 +502,7 @@ fn builtin_calibration_samples() -> Vec<CalibrationPoint> {
             35.99,
         ),
         point(
-            "高晓论文完整修改513_20段.docx",
+            "历史改写不足样本C",
             50.81,
             57,
             12405,
@@ -354,7 +515,7 @@ fn builtin_calibration_samples() -> Vec<CalibrationPoint> {
             41.11,
         ),
         point(
-            "高晓论文完整修改513_fn2.docx",
+            "历史较高风险样本A",
             53.58,
             57,
             12901,
@@ -367,7 +528,7 @@ fn builtin_calibration_samples() -> Vec<CalibrationPoint> {
             57.36,
         ),
         point(
-            "高晓论文完整修改513_fn6.docx",
+            "历史较高风险样本B",
             53.98,
             57,
             11914,
@@ -380,7 +541,7 @@ fn builtin_calibration_samples() -> Vec<CalibrationPoint> {
             42.81,
         ),
         point(
-            "高晓论文完整修改513_fn5.docx",
+            "历史高风险样本A",
             61.0,
             57,
             11155,
@@ -393,7 +554,7 @@ fn builtin_calibration_samples() -> Vec<CalibrationPoint> {
             35.86,
         ),
         point(
-            "高晓论文完整修改513_整篇.docx",
+            "历史高风险样本B",
             61.7,
             57,
             10843,
@@ -545,7 +706,7 @@ fn classify_profile(metrics: &AigcMetrics, estimated: f32) -> String {
         && metrics.ai_terms_per_10k <= 4.0
         && metrics.plain_terms_per_10k >= 230.0
     {
-        "接近17-18%成功稿".to_string()
+        "低风险成功区间".to_string()
     } else if metrics.ai_terms_per_10k >= 18.0 || metrics.plain_terms_per_10k < 90.0 {
         "原稿高AI".to_string()
     } else if estimated >= 40.0 {
@@ -556,7 +717,7 @@ fn classify_profile(metrics: &AigcMetrics, estimated: f32) -> String {
 }
 
 fn classify_risk_level(estimated: f32, profile: &str) -> String {
-    if profile == "接近17-18%成功稿" || estimated <= 23.0 {
+    if profile == "低风险成功区间" || estimated <= 23.0 {
         "低风险".to_string()
     } else if estimated <= 35.0 {
         "中风险".to_string()
@@ -569,12 +730,12 @@ fn classify_risk_level(estimated: f32, profile: &str) -> String {
 
 fn build_summary(profile: &str, estimated: f32, metrics: &AigcMetrics) -> String {
     match profile {
-        "接近17-18%成功稿" => format!(
-            "整体指标接近已知17%-18%成功稿，AI套话密度较低，朴素表达密度较高，估算约 {:.1}%。",
+        "低风险成功区间" => format!(
+            "整体指标接近历史低风险成功区间，AI套话密度较低，朴素表达密度较高，估算约 {:.1}%。",
             estimated
         ),
         "过度扩写稿" => format!(
-            "文本比成功稿更长，缓冲表达密度偏高，容易像fn8/fn10那类过度扩写稿，估算约 {:.1}%。",
+            "文本比低风险成功区间更长，缓冲表达密度偏高，容易落入过度扩写型中风险，估算约 {:.1}%。",
             estimated
         ),
         "原稿高AI" => format!(
@@ -586,7 +747,7 @@ fn build_summary(profile: &str, estimated: f32, metrics: &AigcMetrics) -> String
             estimated
         ),
         _ => format!(
-            "指标处在成功稿和高风险稿之间，平均段长 {:.1} 字、平均句长 {:.1} 字，估算约 {:.1}%。",
+            "指标处在低风险区间和高风险区间之间，平均段长 {:.1} 字、平均句长 {:.1} 字，估算约 {:.1}%。",
             metrics.avg_paragraph_len, metrics.avg_sentence_len, estimated
         ),
     }
@@ -594,7 +755,7 @@ fn build_summary(profile: &str, estimated: f32, metrics: &AigcMetrics) -> String
 
 fn build_next_action(profile: &str, estimated: f32) -> String {
     match profile {
-        "接近17-18%成功稿" => {
+        "低风险成功区间" => {
             "接近成功区间，建议先去 PaperPass 实测，不要继续大幅改写。".to_string()
         }
         "过度扩写稿" => "不要继续整篇扩写，优先回到成功链路基线或做局部回压。".to_string(),
@@ -661,10 +822,91 @@ fn paragraph_risk(text: &str) -> (f32, Vec<String>) {
         risk += 8.0;
         reasons.push("连接词偏模板化".to_string());
     }
+    let vip_hits = count_terms(text, VIP_REPORT_TERMS);
+    let vip_structure = vip_structure_risk(text);
+    if vip_hits >= 2 || vip_structure >= 2 {
+        risk += (14.0 + vip_structure as f32 * 4.0).min(30.0);
+        reasons.push(vip_structure_reason(vip_structure));
+    }
     if reasons.is_empty() {
-        reasons.push("指标略高于成功样本".to_string());
+        reasons.push("指标略高于低风险区间".to_string());
     }
     (risk.clamp(0.0, 100.0), reasons)
+}
+
+fn vip_structure_risk(text: &str) -> usize {
+    let compact: String = text.chars().filter(|ch| !ch.is_whitespace()).collect();
+    let cjk = cjk_count(&compact);
+    let sentence = sentence_count(&compact).max(1);
+    let mut score = 0usize;
+
+    if compact.contains("本研究")
+        && (compact.contains("基于") || compact.contains("采用") || compact.contains("通过"))
+        && (compact.contains("提出") || compact.contains("构建") || compact.contains("分析"))
+    {
+        score += 1;
+    }
+
+    if cjk > 220
+        && compact.contains("数据")
+        && compact.contains("问题")
+        && (compact.contains("建议") || compact.contains("策略"))
+    {
+        score += 1;
+    }
+
+    let has_list = (compact.contains("一是") && compact.contains("二是"))
+        || (compact.contains("第一阶段") && compact.contains("第二阶段"))
+        || (compact.contains("首先") && compact.contains("其次"))
+        || (compact.contains("三个方面") && compact.contains("方面"));
+    let has_package = compact.contains("优化策略")
+        || compact.contains("优化建议")
+        || compact.contains("服务质量优化")
+        || compact.contains("发展历程")
+        || compact.contains("理论")
+        || compact.contains("综上")
+        || compact.contains("结论");
+    let has_summary = compact.contains("为")
+        && (compact.contains("提供") || compact.contains("推动") || compact.contains("构建"));
+    if has_list && has_package {
+        score += 2;
+    } else if has_list {
+        score += 1;
+    }
+    if has_package && has_summary {
+        score += 1;
+    }
+
+    if compact.contains("概念")
+        && compact.contains("指")
+        && (compact.contains("评价") || compact.contains("体系") || compact.contains("维度"))
+    {
+        score += 1;
+    }
+
+    if compact.contains("综上所述")
+        || compact.contains("基于此")
+        || compact.contains("综合以上分析")
+        || compact.contains("最终形成")
+    {
+        score += 1;
+    }
+
+    if cjk > 450 && sentence <= 6 {
+        score += 1;
+    }
+
+    score
+}
+
+fn vip_structure_reason(score: usize) -> String {
+    if score >= 4 {
+        "高度接近维普命中的完整包装段：摘要/综述/策略/阶段推进信息被压成完整闭环".to_string()
+    } else if score >= 2 {
+        "接近维普命中的摘要式、方案式或阶段推进结构".to_string()
+    } else {
+        "含有维普报告命中过的包装式表达".to_string()
+    }
 }
 
 fn is_body_candidate(paragraph: &Paragraph) -> bool {
@@ -790,5 +1032,12 @@ mod tests {
         ];
         let metrics = calculate_metrics(&paragraphs);
         assert_eq!(metrics.body_paragraphs, 1);
+    }
+
+    #[test]
+    fn flags_vip_report_packaged_structure() {
+        let text = "综合以上分析，建议企业分三阶段推进服务质量优化。第一阶段聚焦速赢策略，落实政策透明化。第二阶段转向中等难度任务，搭建技术通道并开发培训课程。第三阶段构建长效机制，最终形成服务与效益相互促进的良性循环。";
+        let (_, reasons) = paragraph_risk(text);
+        assert!(reasons.iter().any(|item| item.contains("维普")));
     }
 }

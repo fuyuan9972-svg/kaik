@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { FlaskConical, Play, Settings, Square } from "lucide-vue-next";
+import { FlaskConical, Gauge, Play, Settings, Square } from "lucide-vue-next";
 import FileUpload from "../components/FileUpload.vue";
 import ProgressBar from "../components/ProgressBar.vue";
 import { useAppStore } from "../stores/app";
@@ -24,7 +24,7 @@ function fileName(path: string) {
       </button>
     </section>
 
-    <FileUpload @selected="store.parseFile" />
+    <FileUpload @selected="store.startUnifiedTask" />
 
     <section v-if="store.filePath" class="panel">
       <div class="file-card">
@@ -57,10 +57,85 @@ function fileName(path: string) {
           </select>
         </label>
         <p>
-          2.0 更偏短句和生涩感；基线用于复现 fn11。当前会调用 API {{ store.rewriteableCount }} 段，跳过
+          2.0 更偏短句和生涩感；基线作为稳定对照组。当前会调用 API {{ store.rewriteableCount }} 段，跳过
           {{ store.skippedParagraphCount }} 段低收益内容。
         </p>
       </div>
+
+      <section v-if="store.aigcAnalysis" class="task-analysis-card">
+        <div class="section-heading">
+          <span>原稿 AI 混合检测</span>
+          <small>{{ store.aigcAnalysis.detectionMode === "ai_mixed" ? "检测完成" : "本地兜底" }}</small>
+        </div>
+        <div class="analysis-grid compact">
+          <article class="score-card">
+            <span>校准后 AI 率</span>
+            <strong>{{ (store.originalAigcAnalysis ?? store.aigcAnalysis).estimatedAigc.toFixed(1) }}%</strong>
+            <small>
+              {{ (store.originalAigcAnalysis ?? store.aigcAnalysis).rangeLow.toFixed(1) }}% -
+              {{ (store.originalAigcAnalysis ?? store.aigcAnalysis).rangeHigh.toFixed(1) }}%
+            </small>
+          </article>
+          <article class="score-card" v-if="(store.originalAigcAnalysis ?? store.aigcAnalysis).uncalibratedEstimatedAigc != null">
+            <span>原始 AI 混合</span>
+            <strong>{{ (store.originalAigcAnalysis ?? store.aigcAnalysis).uncalibratedEstimatedAigc?.toFixed(1) }}%</strong>
+            <small>
+              校准 {{ ((store.originalAigcAnalysis ?? store.aigcAnalysis).calibrationCorrection ?? 0) > 0 ? "+" : "" }}{{ ((store.originalAigcAnalysis ?? store.aigcAnalysis).calibrationCorrection ?? 0).toFixed(2) }}
+            </small>
+          </article>
+          <article class="score-card">
+            <span>风险等级</span>
+            <strong>{{ store.aigcAnalysis.riskLevel }}</strong>
+            <small>{{ store.aigcAnalysis.profile }}</small>
+          </article>
+          <article class="score-card">
+            <span>试跑目标</span>
+            <strong>{{ store.trialTargetAigc().toFixed(1) }}%</strong>
+            <small>先比原稿降低约15点</small>
+          </article>
+        </div>
+        <p>{{ store.aigcAnalysis.summary }}</p>
+        <p v-if="store.aigcAnalysis.calibrationSummary">{{ store.aigcAnalysis.calibrationSummary }}</p>
+      </section>
+
+      <section class="task-flow-card">
+        <div class="flow-step" :class="{ done: Boolean(store.aigcAnalysis), active: store.taskStage === 'detected' }">
+          <strong>1</strong>
+          <span>AI 混合检测</span>
+          <small>{{ store.aigcAnalysis ? "已完成" : "上传后自动检测" }}</small>
+        </div>
+        <div class="flow-step" :class="{ done: Boolean(store.trialEvaluation), active: store.activeRewriteKind === 'sample' }">
+          <strong>2</strong>
+          <span>试跑 {{ Math.min(20, store.rewriteableCount) }} 段</span>
+          <small>{{ store.trialEvaluation ? "已评估" : "先看策略是否适合" }}</small>
+        </div>
+        <div class="flow-step" :class="{ active: store.activeRewriteKind === 'full' || store.activeRewriteKind === 'stacked', done: store.taskStage === 'completed' }">
+          <strong>3</strong>
+          <span>全文改写</span>
+          <small>{{ store.trialEvaluation ? "叠加跑全文或直接全篇" : "可直接全篇" }}</small>
+        </div>
+      </section>
+
+      <section v-if="store.trialEvaluation" class="task-analysis-card">
+        <div class="section-heading">
+          <span>试跑结论</span>
+          <small>置信度 {{ store.trialEvaluation.confidence.toFixed(0) }}%</small>
+        </div>
+        <div class="trial-verdict">
+          <strong>{{ store.trialEvaluation.verdict }}</strong>
+          <span>{{ store.trialEvaluation.summary }}</span>
+        </div>
+        <div class="scope-summary" v-if="store.trialEvaluation.risks.length">
+          <span>主要风险</span>
+          <div>
+            <small v-for="risk in store.trialEvaluation.risks" :key="risk">{{ risk }}</small>
+          </div>
+        </div>
+        <p>
+          推荐策略：{{ store.trialEvaluation.recommendedProfile === "sample_calibrated_17_success" ? "成功链路17（基线）" : "成功链路17 2.0" }}。
+          可选择叠加跑全文：先把试跑20段合成底稿，再基于这个底稿跑完整正文。
+        </p>
+      </section>
 
       <ProgressBar
         :current="store.loading ? store.progressCurrent : 0"
@@ -93,26 +168,36 @@ function fileName(path: string) {
           type="button"
           :disabled="
             store.rewriteableCount === 0 ||
-            (store.loading && store.activeRewriteKind !== 'full')
-          "
-          @click="store.activeRewriteKind === 'full' ? store.cancelRewrite() : store.rewrite()"
-        >
-          <Square v-if="store.activeRewriteKind === 'full'" :size="17" />
-          <Play v-else :size="17" />
-          {{ store.activeRewriteKind === "full" ? "中止改写" : "开始改写" }}
-        </button>
-        <button
-          class="secondary-button"
-          type="button"
-          :disabled="
-            store.rewriteableCount === 0 ||
             (store.loading && store.activeRewriteKind !== 'sample')
           "
           @click="store.activeRewriteKind === 'sample' ? store.cancelRewrite() : store.runSampleTest()"
         >
           <Square v-if="store.activeRewriteKind === 'sample'" :size="17" />
           <FlaskConical v-else :size="17" />
-          {{ store.activeRewriteKind === "sample" ? "中止测试" : "测试 20 段" }}
+          {{ store.activeRewriteKind === "sample" ? "中止试跑" : `试跑 ${Math.min(20, store.rewriteableCount)} 段` }}
+        </button>
+        <button
+          class="secondary-button"
+          type="button"
+          :disabled="
+            !store.trialEvaluation ||
+            store.rewriteableCount === 0 ||
+            (store.loading && store.activeRewriteKind !== 'stacked')
+          "
+          @click="store.activeRewriteKind === 'stacked' ? store.cancelRewrite() : store.rewriteStackedFull()"
+        >
+          <Square v-if="store.activeRewriteKind === 'stacked'" :size="17" />
+          <Play v-else :size="17" />
+          {{ store.activeRewriteKind === "stacked" ? "中止叠加" : "叠加跑全文" }}
+        </button>
+        <button
+          class="secondary-button"
+          type="button"
+          :disabled="store.loading || store.rewriteableCount === 0"
+          @click="store.rewrite()"
+        >
+          <Gauge :size="17" />
+          直接整篇改写
         </button>
       </div>
     </section>
@@ -121,7 +206,7 @@ function fileName(path: string) {
       <h2>处理说明</h2>
       <div>
         <p>导出会保留全文结构，只替换已接受的正文改写段。</p>
-        <p>建议先用检测页判断 AI 率，再决定跑 20 段测试还是整篇改写。</p>
+        <p>当前主流程是自动检测、试跑 20 段，再以试跑底稿为基础叠加跑全文；也可以跳过试跑直接整篇。</p>
       </div>
     </section>
   </main>

@@ -1,4 +1,7 @@
-use crate::models::{AigcCalibrationSample, ApiConfig, RewriteResult, RewriteSession};
+use crate::models::{
+    AigcCalibrationRule, AigcCalibrationSample, AigcDetectionSnapshot, AigcFeedbackRecord,
+    ApiConfig, RewriteResult, RewriteSession,
+};
 use anyhow::Context;
 use std::{fs, path::PathBuf};
 use tauri::{AppHandle, Manager};
@@ -91,6 +94,7 @@ pub fn load_sessions(app: &AppHandle) -> anyhow::Result<Vec<RewriteSession>> {
                 sample_limit: None,
                 current_ai_rate: None,
                 target_ai_rate: None,
+                task_type: None,
                 paragraphs: Vec::new(),
                 results,
                 exported_path: None,
@@ -137,6 +141,101 @@ pub fn load_aigc_calibrations(app: &AppHandle) -> anyhow::Result<Vec<AigcCalibra
         serde_json::from_str(&data).context("unable to parse aigc-calibrations.json")?;
     sort_aigc_calibrations(&mut samples);
     Ok(samples)
+}
+
+pub fn load_detection_snapshots(app: &AppHandle) -> anyhow::Result<Vec<AigcDetectionSnapshot>> {
+    let path = app_dir(app)?.join("aigc-detection-snapshots.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data =
+        fs::read_to_string(&path).with_context(|| format!("unable to read {}", path.display()))?;
+    let mut snapshots: Vec<AigcDetectionSnapshot> =
+        serde_json::from_str(&data).context("unable to parse aigc-detection-snapshots.json")?;
+    snapshots.sort_by(|a, b| timestamp_value(&b.created_at).cmp(&timestamp_value(&a.created_at)));
+    Ok(snapshots)
+}
+
+pub fn save_detection_snapshots(
+    app: &AppHandle,
+    snapshots: &[AigcDetectionSnapshot],
+) -> anyhow::Result<()> {
+    let path = app_dir(app)?.join("aigc-detection-snapshots.json");
+    let data = serde_json::to_string_pretty(snapshots)
+        .context("unable to serialize detection snapshots")?;
+    fs::write(&path, data).with_context(|| format!("unable to write {}", path.display()))?;
+    Ok(())
+}
+
+pub fn upsert_detection_snapshot(
+    app: &AppHandle,
+    snapshot: AigcDetectionSnapshot,
+) -> anyhow::Result<Vec<AigcDetectionSnapshot>> {
+    let mut snapshots = load_detection_snapshots(app)?;
+    snapshots.retain(|item| item.id != snapshot.id);
+    snapshots.push(snapshot);
+    snapshots.sort_by(|a, b| timestamp_value(&b.created_at).cmp(&timestamp_value(&a.created_at)));
+    save_detection_snapshots(app, &snapshots)?;
+    Ok(snapshots)
+}
+
+pub fn load_feedback_records(app: &AppHandle) -> anyhow::Result<Vec<AigcFeedbackRecord>> {
+    let path = app_dir(app)?.join("aigc-feedback-records.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data =
+        fs::read_to_string(&path).with_context(|| format!("unable to read {}", path.display()))?;
+    let mut records: Vec<AigcFeedbackRecord> =
+        serde_json::from_str(&data).context("unable to parse aigc-feedback-records.json")?;
+    records.sort_by(|a, b| timestamp_value(&b.updated_at).cmp(&timestamp_value(&a.updated_at)));
+    Ok(records)
+}
+
+pub fn save_feedback_records(
+    app: &AppHandle,
+    records: &[AigcFeedbackRecord],
+) -> anyhow::Result<()> {
+    let path = app_dir(app)?.join("aigc-feedback-records.json");
+    let data =
+        serde_json::to_string_pretty(records).context("unable to serialize feedback records")?;
+    fs::write(&path, data).with_context(|| format!("unable to write {}", path.display()))?;
+    Ok(())
+}
+
+pub fn upsert_feedback_record(
+    app: &AppHandle,
+    record: AigcFeedbackRecord,
+) -> anyhow::Result<Vec<AigcFeedbackRecord>> {
+    let mut records = load_feedback_records(app)?;
+    records.retain(|item| item.id != record.id);
+    records.push(record);
+    records.sort_by(|a, b| timestamp_value(&b.updated_at).cmp(&timestamp_value(&a.updated_at)));
+    save_feedback_records(app, &records)?;
+    Ok(records)
+}
+
+pub fn load_calibration_rules(app: &AppHandle) -> anyhow::Result<Vec<AigcCalibrationRule>> {
+    let path = app_dir(app)?.join("aigc-calibration-rules.json");
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let data =
+        fs::read_to_string(&path).with_context(|| format!("unable to read {}", path.display()))?;
+    let rules: Vec<AigcCalibrationRule> =
+        serde_json::from_str(&data).context("unable to parse aigc-calibration-rules.json")?;
+    Ok(rules)
+}
+
+pub fn save_calibration_rules(
+    app: &AppHandle,
+    rules: &[AigcCalibrationRule],
+) -> anyhow::Result<()> {
+    let path = app_dir(app)?.join("aigc-calibration-rules.json");
+    let data =
+        serde_json::to_string_pretty(rules).context("unable to serialize calibration rules")?;
+    fs::write(&path, data).with_context(|| format!("unable to write {}", path.display()))?;
+    Ok(())
 }
 
 pub fn save_aigc_calibrations(

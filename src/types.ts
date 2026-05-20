@@ -55,6 +55,7 @@ export interface RewriteSession {
   sampleLimit: number | null;
   currentAiRate: number | null;
   targetAiRate: number | null;
+  taskType?: "sampleTrial" | "guidedRewrite" | "fullRewrite" | string | null;
   paragraphs: Paragraph[];
   results: RewriteResult[];
   exportedPath: string | null;
@@ -63,8 +64,11 @@ export interface RewriteSession {
 export interface RewriteOptions {
   sampleLimit?: number | null;
   excludeIndices?: number[];
+  includeIndices?: number[];
+  stackedFull?: boolean;
   currentAiRate?: number | null;
   targetAiRate?: number | null;
+  externalReport?: ExternalAigcReportEvidence | null;
 }
 
 export interface ApiConfig {
@@ -103,6 +107,17 @@ export interface AigcMetrics {
   bufferTermsPer10k: number;
   plainTermsPer10k: number;
   connectorsPer10k: number;
+}
+
+export interface AigcMetricsDelta {
+  cjkCharsDelta: number;
+  avgParagraphLenDelta: number;
+  avgSentenceLenDelta: number;
+  punctuationPer100Delta: number;
+  aiTermsPer10kDelta: number;
+  bufferTermsPer10kDelta: number;
+  plainTermsPer10kDelta: number;
+  connectorsPer10kDelta: number;
 }
 
 export interface AigcCalibrationSample {
@@ -165,6 +180,10 @@ export interface AigcAnalysis {
   similarSamples: AigcSimilarSample[];
   paragraphRisks: AigcParagraphRisk[];
   localEstimatedAigc?: number | null;
+  uncalibratedEstimatedAigc?: number | null;
+  calibrationCorrection?: number | null;
+  calibrationSummary?: string | null;
+  calibrationSampleCount?: number | null;
   aiAssessment?: AiAigcAssessment | null;
   aiError?: string | null;
   detectionMode: string;
@@ -179,4 +198,112 @@ export interface AigcCalibrationInput {
   note?: string | null;
 }
 
-export type PageName = "home" | "detect" | "compare" | "history" | "settings";
+export interface TrialEvaluation {
+  verdict: string;
+  recommendedAction: string;
+  recommendedProfile: ApiConfig["promptProfile"];
+  recommendedCurrentAiRate?: number | null;
+  recommendedTargetAiRate?: number | null;
+  recommendedParagraphIndices: number[];
+  summary: string;
+  risks: string[];
+  confidence: number;
+}
+
+export interface TrialEvaluationInput {
+  analysis?: AigcAnalysis | null;
+  paragraphs: Paragraph[];
+  results: RewriteResult[];
+  promptProfile: string;
+  currentAiRate?: number | null;
+  targetAiRate?: number | null;
+  trialTargetAigc?: number | null;
+}
+
+export interface AigcDetectionSnapshot {
+  id: string;
+  fileName: string;
+  filePath: string;
+  createdAt: string;
+  analysis: AigcAnalysis;
+}
+
+export interface AigcFeedbackInput {
+  measuredAigc: number;
+  plagiarismRate?: number | null;
+  provider?: string | null;
+  originalSnapshotId?: string | null;
+  rewrittenSnapshotId?: string | null;
+  sessionId?: string | null;
+  strategy?: string | null;
+  round?: string | null;
+  note?: string | null;
+  externalReport?: ExternalAigcReportEvidence | null;
+}
+
+export interface ExternalAigcReportSegment {
+  no: number;
+  text: string;
+  suspectedChars: number;
+  suspectedRatio: number;
+}
+
+export interface ExternalAigcReportEvidence {
+  provider: string;
+  reportFileName?: string | null;
+  reportFilePath?: string | null;
+  reportScore?: number | null;
+  totalSuspectedRatio?: number | null;
+  highAndMiddleSuspectedRatio?: number | null;
+  highSuspectedRatio?: number | null;
+  middleSuspectedRatio?: number | null;
+  lowSuspectedRatio?: number | null;
+  noAiSuspectedRatio?: number | null;
+  humanWrittenRate?: number | null;
+  suspiciousSegmentCount: number;
+  markedSpanCount: number;
+  markedChars: number;
+  severeSegmentCount: number;
+  moderateSegmentCount: number;
+  mildSegmentCount: number;
+  riskTypes: string[];
+  segments: ExternalAigcReportSegment[];
+  analysisSummary?: string | null;
+  rewriteGuidance?: string | null;
+}
+
+export interface AigcFeedbackRecord {
+  id: string;
+  measuredAigc: number;
+  plagiarismRate: number | null;
+  provider: string | null;
+  originalSnapshotId: string | null;
+  rewrittenSnapshotId: string | null;
+  sessionId: string | null;
+  strategy: string | null;
+  round: string | null;
+  note: string | null;
+  originalAppEstimatedAigc: number | null;
+  rewrittenAppEstimatedAigc: number | null;
+  appEstimatedAigc: number | null;
+  estimationError: number | null;
+  estimatedDrop: number | null;
+  metricsDelta: AigcMetricsDelta | null;
+  aiReview: string | null;
+  externalReport: ExternalAigcReportEvidence | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface AigcCalibrationRule {
+  id: string;
+  pattern: string;
+  correction: number;
+  recommendedStrategy: string;
+  confidence: number;
+  sampleCount: number;
+  summary: string;
+  updatedAt: string;
+}
+
+export type PageName = "home" | "detect" | "compare" | "history" | "calibration" | "settings";
