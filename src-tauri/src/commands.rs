@@ -267,6 +267,35 @@ pub async fn analyze_aigc_file_ai(
 }
 
 #[tauri::command]
+pub async fn analyze_aigc_paragraphs_ai(
+    app: AppHandle,
+    file_name: String,
+    paragraphs: Vec<Paragraph>,
+    config: ApiConfig,
+) -> Result<AigcAnalysis, String> {
+    let samples = crate::config::load_aigc_calibrations(&app).map_err(|error| error.to_string())?;
+    let rules = crate::config::load_calibration_rules(&app).map_err(|error| error.to_string())?;
+    let feedback_records =
+        crate::config::load_feedback_records(&app).map_err(|error| error.to_string())?;
+    let config = detection_config(config);
+    let client = crate::rewriter::create_client().map_err(|error| error.to_string())?;
+    let local = crate::aigc_detector::analyze_paragraphs(&file_name, &paragraphs, &samples);
+    let analysis = crate::ai_aigc_detector::analyze_paragraphs_with_fallback(
+        &client,
+        &config,
+        local,
+        &paragraphs,
+        &samples,
+        &feedback_records,
+    )
+    .await
+    .map_err(|error| error.to_string())?;
+    Ok(crate::aigc_detector::apply_calibration_rules(
+        analysis, &rules,
+    ))
+}
+
+#[tauri::command]
 pub fn load_aigc_calibrations(app: AppHandle) -> Result<Vec<AigcCalibrationSample>, String> {
     crate::config::load_aigc_calibrations(&app).map_err(|error| error.to_string())
 }

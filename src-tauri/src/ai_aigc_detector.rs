@@ -73,6 +73,39 @@ pub async fn analyze_file_with_fallback(
     }
 }
 
+pub async fn analyze_paragraphs_with_fallback(
+    client: &Client,
+    config: &ApiConfig,
+    local: AigcAnalysis,
+    paragraphs: &[Paragraph],
+    user_samples: &[AigcCalibrationSample],
+    feedback_records: &[AigcFeedbackRecord],
+) -> anyhow::Result<AigcAnalysis> {
+    if let Err(error) = crate::rewriter::validate_config(config) {
+        return Ok(crate::aigc_detector::with_ai_error(
+            local,
+            error.to_string(),
+        ));
+    }
+
+    match assess_with_ai(
+        client,
+        config,
+        &local,
+        paragraphs,
+        user_samples,
+        feedback_records,
+    )
+    .await
+    {
+        Ok(assessment) => Ok(crate::aigc_detector::merge_ai_assessment(local, assessment)),
+        Err(error) => Ok(crate::aigc_detector::with_ai_error(
+            local,
+            error.to_string(),
+        )),
+    }
+}
+
 async fn assess_with_ai(
     client: &Client,
     config: &ApiConfig,

@@ -343,8 +343,8 @@ pub fn build_rules(records: &[AigcFeedbackRecord]) -> Vec<AigcCalibrationRule> {
                 .map(|report| {
                     report.total_suspected_ratio.unwrap_or(record.measured_aigc) <= 18.0
                         && report.high_suspected_ratio.unwrap_or(0.0) <= 3.0
-                        && report.middle_suspected_ratio.unwrap_or(0.0) <= 6.5
-                        && report.suspicious_segment_count <= 20
+                        && report.middle_suspected_ratio.unwrap_or(0.0) <= 8.5
+                        && report.suspicious_segment_count <= 14
                 })
                 .unwrap_or(false)
         })
@@ -362,7 +362,7 @@ pub fn build_rules(records: &[AigcFeedbackRecord]) -> Vec<AigcCalibrationRule> {
             recommended_strategy: "成功链路17 2.0".to_string(),
             confidence: (low_ratio_success_reports.len() as f32 * 16.0).clamp(30.0, 82.0),
             sample_count: low_ratio_success_reports.len(),
-            summary: "15%左右成功报告主要来自“测试20段后叠加全文”链路；少量高疑似片段并不代表整体失败，只要高疑似占比低、高中疑似总量低、命中片段少，检测应向低风险区间靠拢。".to_string(),
+            summary: "15%左右成功报告主要来自“测试20段后叠加全文”链路；少量中低疑似解释段并不代表整体失败，只要高疑似占比低、中疑似可控、命中片段少，检测应向低风险区间靠拢。".to_string(),
             updated_at: current_timestamp(),
         });
     }

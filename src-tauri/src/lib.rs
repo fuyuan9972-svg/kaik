@@ -34,6 +34,7 @@ pub fn run() {
             commands::export_session_docx,
             commands::analyze_aigc_file,
             commands::analyze_aigc_file_ai,
+            commands::analyze_aigc_paragraphs_ai,
             commands::load_aigc_calibrations,
             commands::save_aigc_calibration,
             commands::delete_aigc_calibration,

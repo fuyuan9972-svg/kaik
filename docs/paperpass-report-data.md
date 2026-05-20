@@ -23,6 +23,15 @@ npm run paperpass:data -- \
   --out "/tmp/paperpass-data.json"
 ```
 
+只有 PaperPass 报告、暂时没有原稿/改写稿文件时，也可以先抽取外部报告证据：
+
+```bash
+npm run paperpass:data -- \
+  --report "/path/to/AIGC检测报告.html" \
+  --pp 15.33 \
+  --out "/tmp/paperpass-report-only.json"
+```
+
 ## 输出内容
 
 - `measuredAigc`：PaperPass 总疑似 AIGC。
@@ -31,6 +40,8 @@ npm run paperpass:data -- \
 - `externalReport`：可放入 App 校准反馈的报告证据。
 - `externalReport.segments`：PaperPass 命中的疑似片段，按疑似度从高到低排序。
 - `externalReport.rewriteGuidance`：根据报告片段反推出的改写建议。
+
+报告单独解析时不会生成 `originalMetrics`、`rewrittenMetrics` 和 `metricsDelta`，只作为 PP/维普外部报告证据进入校准库。
 
 ## 目前支持
 

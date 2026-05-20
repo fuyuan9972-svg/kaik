@@ -84,6 +84,8 @@ const RISK_TYPES = [
   ["理论定义包装段", ["理论", "概念", "模型", "维度", "体系"]],
   ["数据解释包装段", ["数据", "比例", "得分", "评分", "投诉量", "表"]],
   ["条目解释包装段", ["第三", "第四", "首先", "其次", "趣味性", "基本权利"]],
+  ["术语例句解释段", ["例句", "相当于", "意思大致", "表目的", "表结果", "用于连接"]],
+  ["语体功能解释段", ["语体功能", "程式化", "庄重", "严谨", "公文格式", "语气"]],
   ["案例完整包装段", ["案例", "Hello Kitty", "小小飞行家", "主题", "仪式感", "参与"]],
   ["致谢作文腔", ["致谢", "感谢", "导师", "家人", "室友", "论文也算"]],
   ["策略清单包装段", ["建议", "对策", "策略", "一是", "二是", "第一阶段", "第二阶段"]],
@@ -96,6 +98,7 @@ function usage() {
     [
       "Usage:",
       "  npm run paperpass:data -- --before <改写前.docx|txt> --after <改写后.docx|txt> --report <AIGC检测报告.html|报告目录> [--pp 20.39] [--out result.json]",
+      "  npm run paperpass:data -- --report <AIGC检测报告.html|报告目录> [--pp 15.33] [--out result.json]",
       "",
       "Notes:",
       "  - .txt/.html can be read directly.",
@@ -405,7 +408,8 @@ function buildRewriteGuidance(reduce, segments, riskTypes) {
   const ratioGuidance =
     (nullableNumber(reduce.totalSuspectedTextRatio) ?? 100) <= 18 &&
     (nullableNumber(reduce.highSuspectedTextRatio) ?? 100) <= 3 &&
-    (nullableNumber(reduce.middleSuspectedTextRatio) ?? 100) <= 6.5
+    (nullableNumber(reduce.middleSuspectedTextRatio) ?? 100) <= 8.5 &&
+    segments.length <= 14
       ? "这类15%左右成功报告说明，少量高疑似片段可以接受，关键是继续压低中疑似包装段占比。"
       : "";
   return `${severity}。${ratioGuidance}当前成功链路应按“测试20段后叠加全文”理解，不按普通整篇直跑归因。重点拆散${riskTypes.join("、") || "完整包装段"}，把表格/数据解释、文献综述、理论定义、条目解释、案例完整包装和致谢作文腔改得更分散、更具体。典型命中：${top}`;
@@ -423,17 +427,29 @@ function round(value, digits) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (!args.before || !args.after || !args.report) {
+  if (!args.report || Boolean(args.before) !== Boolean(args.after)) {
     usage();
     process.exit(1);
   }
+  const report = parsePaperPassReport(args.report);
+  const measuredAigc = args.pp != null ? nullableNumber(args.pp) : report.totalSuspectedRatio;
+  const output = args.before
+    ? buildPairedOutput(args, report, measuredAigc)
+    : buildReportOnlyOutput(args, report, measuredAigc);
+  const json = `${JSON.stringify(output, null, 2)}\n`;
+  if (args.out) {
+    fs.writeFileSync(args.out, json);
+  } else {
+    process.stdout.write(json);
+  }
+}
+
+function buildPairedOutput(args, report, measuredAigc) {
   const beforeText = readDocumentText(args.before);
   const afterText = readDocumentText(args.after);
   const beforeMetrics = metricsFromText(beforeText);
   const afterMetrics = metricsFromText(afterText);
-  const report = parsePaperPassReport(args.report);
-  const measuredAigc = args.pp != null ? nullableNumber(args.pp) : report.totalSuspectedRatio;
-  const output = {
+  return {
     generatedAt: new Date().toISOString(),
     originalFile: path.resolve(args.before),
     rewrittenFile: path.resolve(args.after),
@@ -452,12 +468,25 @@ function main() {
         "remaining report-hit middle/low fragments: literature review, theory definition, data explanation, strategy list, meaning closure",
     },
   };
-  const json = `${JSON.stringify(output, null, 2)}\n`;
-  if (args.out) {
-    fs.writeFileSync(args.out, json);
-  } else {
-    process.stdout.write(json);
-  }
+}
+
+function buildReportOnlyOutput(args, report, measuredAigc) {
+  return {
+    generatedAt: new Date().toISOString(),
+    reportFile: path.resolve(args.report),
+    measuredAigc,
+    externalReport: report,
+    calibrationHint: {
+      provider: "paperpass",
+      measuredAigc,
+      appShouldUseAs:
+        "external report evidence only; no original/rewritten metrics delta because before/after files were not provided",
+      rewriteShouldFocusOn:
+        "remaining report-hit middle/low fragments: terminology examples, register-function explanation, literature review, acknowledgements, meaning closure",
+      workflowHint:
+        "treat 17 2.0 successful reports as test-20-paragraphs followed by stacked full rewrite, not ordinary one-pass full rewrite",
+    },
+  };
 }
 
 main();

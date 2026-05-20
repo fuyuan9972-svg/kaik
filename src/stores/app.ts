@@ -34,6 +34,9 @@ interface AppState {
   originalAigcAnalysis: AigcAnalysis | null;
   rewrittenSnapshotId: string;
   rewrittenAigcAnalysis: AigcAnalysis | null;
+  trialDraftAigcAnalysis: AigcAnalysis | null;
+  stackedFullAigcAnalysis: AigcAnalysis | null;
+  directFullAigcAnalysis: AigcAnalysis | null;
   aigcCalibrations: AigcCalibrationSample[];
   detectionSnapshots: AigcDetectionSnapshot[];
   feedbackRecords: AigcFeedbackRecord[];
@@ -87,6 +90,9 @@ export const useAppStore = defineStore("app", {
     originalAigcAnalysis: null,
     rewrittenSnapshotId: "",
     rewrittenAigcAnalysis: null,
+    trialDraftAigcAnalysis: null,
+    stackedFullAigcAnalysis: null,
+    directFullAigcAnalysis: null,
     aigcCalibrations: [],
     detectionSnapshots: [],
     feedbackRecords: [],
@@ -170,6 +176,9 @@ export const useAppStore = defineStore("app", {
         this.originalAigcAnalysis = null;
         this.rewrittenSnapshotId = "";
         this.rewrittenAigcAnalysis = null;
+        this.trialDraftAigcAnalysis = null;
+        this.stackedFullAigcAnalysis = null;
+        this.directFullAigcAnalysis = null;
         this.sampleIndices = [];
         this.trialEvaluation = null;
         this.taskStage = "idle";
@@ -271,6 +280,11 @@ export const useAppStore = defineStore("app", {
           this.taskStage = "trialReady";
           await this.evaluateTrialRewrite();
         } else {
+          await this.analyzeRewriteDraft(
+            options.stackedFull ? "stacked" : "direct",
+            sourceParagraphs,
+            finalResults,
+          );
           this.taskStage = "completed";
           this.page = "compare";
         }
@@ -332,6 +346,7 @@ export const useAppStore = defineStore("app", {
         if (this.trialEvaluation.recommendedTargetAiRate != null) {
           this.targetAiRate = this.trialEvaluation.recommendedTargetAiRate;
         }
+        await this.analyzeRewriteDraft("trial", this.paragraphs, this.results);
         this.taskStage = "evaluated";
         this.status = "试跑评估完成";
       } catch (error) {
@@ -426,6 +441,32 @@ export const useAppStore = defineStore("app", {
         await this.runAiDetection(filePath, "rewritten");
       } catch (error) {
         this.status = `导出完成，但自动检测导出稿失败：${String(error)}`;
+      }
+    },
+
+    async analyzeRewriteDraft(
+      target: "trial" | "stacked" | "direct",
+      sourceParagraphs: Paragraph[],
+      results: RewriteResult[],
+    ) {
+      const paragraphs = this.mergeRewriteResults(sourceParagraphs, results);
+      const label =
+        target === "trial"
+          ? "测试20段后"
+          : target === "stacked"
+            ? "叠加全文后"
+            : "直接全文后";
+      try {
+        const analysis = await invoke<AigcAnalysis>("analyze_aigc_paragraphs_ai", {
+          fileName: `${label}-${this.filePath.split("/").pop() || "当前论文"}`,
+          paragraphs,
+          config: this.config,
+        });
+        if (target === "trial") this.trialDraftAigcAnalysis = analysis;
+        else if (target === "stacked") this.stackedFullAigcAnalysis = analysis;
+        else this.directFullAigcAnalysis = analysis;
+      } catch (error) {
+        this.status = `${label}混合检测失败：${String(error)}`;
       }
     },
 
@@ -659,6 +700,18 @@ export const useAppStore = defineStore("app", {
           .map((item) => [item.index, item.rewritten]),
       );
       return this.paragraphs.map((paragraph) => ({
+        ...paragraph,
+        text: replacements.get(paragraph.index) ?? paragraph.text,
+      }));
+    },
+
+    mergeRewriteResults(paragraphs: Paragraph[], results: RewriteResult[]) {
+      const replacements = new Map(
+        results
+          .filter((item) => item.accepted && !item.failed && !item.skipped)
+          .map((item) => [item.index, item.rewritten]),
+      );
+      return paragraphs.map((paragraph) => ({
         ...paragraph,
         text: replacements.get(paragraph.index) ?? paragraph.text,
       }));

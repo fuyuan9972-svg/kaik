@@ -3,11 +3,20 @@ import { FlaskConical, Gauge, Play, Settings, Square } from "lucide-vue-next";
 import FileUpload from "../components/FileUpload.vue";
 import ProgressBar from "../components/ProgressBar.vue";
 import { useAppStore } from "../stores/app";
+import type { AigcAnalysis } from "../types";
 
 const store = useAppStore();
 
 function fileName(path: string) {
   return path.split("/").pop() || path;
+}
+
+function formatAiRate(analysis: AigcAnalysis | null) {
+  return analysis ? `${analysis.estimatedAigc.toFixed(1)}%` : "--";
+}
+
+function formatAiRange(analysis: AigcAnalysis | null) {
+  return analysis ? `${analysis.rangeLow.toFixed(1)}% - ${analysis.rangeHigh.toFixed(1)}%` : "等待混合检测";
 }
 </script>
 
@@ -69,18 +78,11 @@ function fileName(path: string) {
         </div>
         <div class="analysis-grid compact">
           <article class="score-card">
-            <span>校准后 AI 率</span>
+            <span>AI 混合检测率</span>
             <strong>{{ (store.originalAigcAnalysis ?? store.aigcAnalysis).estimatedAigc.toFixed(1) }}%</strong>
             <small>
               {{ (store.originalAigcAnalysis ?? store.aigcAnalysis).rangeLow.toFixed(1) }}% -
               {{ (store.originalAigcAnalysis ?? store.aigcAnalysis).rangeHigh.toFixed(1) }}%
-            </small>
-          </article>
-          <article class="score-card" v-if="(store.originalAigcAnalysis ?? store.aigcAnalysis).uncalibratedEstimatedAigc != null">
-            <span>原始 AI 混合</span>
-            <strong>{{ (store.originalAigcAnalysis ?? store.aigcAnalysis).uncalibratedEstimatedAigc?.toFixed(1) }}%</strong>
-            <small>
-              校准 {{ ((store.originalAigcAnalysis ?? store.aigcAnalysis).calibrationCorrection ?? 0) > 0 ? "+" : "" }}{{ ((store.originalAigcAnalysis ?? store.aigcAnalysis).calibrationCorrection ?? 0).toFixed(2) }}
             </small>
           </article>
           <article class="score-card">
@@ -92,6 +94,21 @@ function fileName(path: string) {
             <span>试跑目标</span>
             <strong>{{ store.trialTargetAigc().toFixed(1) }}%</strong>
             <small>先比原稿降低约15点</small>
+          </article>
+          <article class="score-card">
+            <span>测试20段后AI率</span>
+            <strong>{{ formatAiRate(store.trialDraftAigcAnalysis) }}</strong>
+            <small>{{ formatAiRange(store.trialDraftAigcAnalysis) }}</small>
+          </article>
+          <article class="score-card">
+            <span>叠加全篇后AI率</span>
+            <strong>{{ formatAiRate(store.stackedFullAigcAnalysis) }}</strong>
+            <small>{{ formatAiRange(store.stackedFullAigcAnalysis) }}</small>
+          </article>
+          <article class="score-card">
+            <span>直接全篇后AI率</span>
+            <strong>{{ formatAiRate(store.directFullAigcAnalysis) }}</strong>
+            <small>{{ formatAiRange(store.directFullAigcAnalysis) }}</small>
           </article>
         </div>
         <p>{{ store.aigcAnalysis.summary }}</p>
