@@ -337,16 +337,17 @@ export const useAppStore = defineStore("app", {
             trialTargetAigc: this.trialTargetAigc(),
           },
         });
-        if (this.trialEvaluation.recommendedProfile) {
+        await this.analyzeRewriteDraft("trial", this.paragraphs, this.results);
+        this.alignTrialEvaluationWithMixedDetection();
+        if (this.trialEvaluation?.recommendedProfile) {
           this.config.promptProfile = this.trialEvaluation.recommendedProfile;
         }
-        if (this.trialEvaluation.recommendedCurrentAiRate != null) {
+        if (this.trialEvaluation?.recommendedCurrentAiRate != null) {
           this.currentAiRate = this.trialEvaluation.recommendedCurrentAiRate;
         }
-        if (this.trialEvaluation.recommendedTargetAiRate != null) {
+        if (this.trialEvaluation?.recommendedTargetAiRate != null) {
           this.targetAiRate = this.trialEvaluation.recommendedTargetAiRate;
         }
-        await this.analyzeRewriteDraft("trial", this.paragraphs, this.results);
         this.taskStage = "evaluated";
         this.status = "试跑评估完成";
       } catch (error) {
@@ -468,6 +469,39 @@ export const useAppStore = defineStore("app", {
       } catch (error) {
         this.status = `${label}混合检测失败：${String(error)}`;
       }
+    },
+
+    alignTrialEvaluationWithMixedDetection() {
+      if (!this.trialEvaluation || !this.trialDraftAigcAnalysis) {
+        return;
+      }
+      const measured = this.trialDraftAigcAnalysis.estimatedAigc;
+      const target = this.trialTargetAigc();
+      const original =
+        this.originalAigcAnalysis?.estimatedAigc ??
+        this.aigcAnalysis?.estimatedAigc ??
+        this.currentAiRate;
+      const drop = Math.max(0, Math.round((original - measured) * 10) / 10);
+      const gap = Math.round((measured - target) * 10) / 10;
+      const verdict = gap <= 3 ? "合格" : gap <= 10 ? "接近" : "偏弱";
+      const recommendedAction = gap <= 3 ? "continue_full" : gap <= 10 ? "rewrite_risky_only" : "increase_strength";
+      const summary =
+        gap <= 3
+          ? `测试20段后混合检测为${measured.toFixed(1)}%，已接近试跑目标${target.toFixed(1)}%，可继续叠加跑全文。`
+          : gap <= 10
+            ? `测试20段后混合检测为${measured.toFixed(1)}%，比试跑目标${target.toFixed(1)}%高${gap.toFixed(1)}点，整体有效但建议叠加全文时优先处理高风险段。`
+            : `测试20段后混合检测为${measured.toFixed(1)}%，比试跑目标${target.toFixed(1)}%高${gap.toFixed(1)}点，已降低${drop.toFixed(1)}点但力度仍偏弱。`;
+      this.trialEvaluation = {
+        ...this.trialEvaluation,
+        verdict,
+        recommendedAction,
+        recommendedCurrentAiRate: measured,
+        summary,
+        risks: [
+          `混合检测口径：${measured.toFixed(1)}%，区间${this.trialDraftAigcAnalysis.rangeLow.toFixed(1)}%-${this.trialDraftAigcAnalysis.rangeHigh.toFixed(1)}%。`,
+          ...this.trialEvaluation.risks.filter((risk) => !risk.includes("48%")).slice(0, 3),
+        ],
+      };
     },
 
     setAccepted(index: number, accepted: boolean) {
