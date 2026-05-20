@@ -177,6 +177,6 @@
 1. `cargo build` / `cargo check` 确保 Rust 编译通过
 2. `npm run build` 确保前端类型检查通过
 3. `npm run tauri:dev` 启动应用，手动走一遍核心流程：
-   - 上传 .docx → 检测 → 试跑20段 → 全文改写 → 对比 → 导出
+   - 上传 .docx/.doc/.pdf/.txt/.rtf/.md → 检测 → 试跑20段 → 全文改写 → 对比 → 导出
 4. P0-3 的验证：在 Calibration 页面录几条反馈，观察校准规则是否按桶生成
 5. P0-2 的验证：断网/限速环境下观察重试行为

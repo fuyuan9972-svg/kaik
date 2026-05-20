@@ -12,7 +12,7 @@ async function chooseFile() {
     filters: [
       {
         name: "Paper",
-        extensions: ["docx", "pdf", "txt"],
+        extensions: ["docx", "doc", "pdf", "txt", "rtf", "md"],
       },
     ],
   });
@@ -26,6 +26,6 @@ async function chooseFile() {
   <button class="upload-zone" type="button" @click="chooseFile">
     <FileUp :size="34" />
     <span>选择论文文件</span>
-    <small>.docx / .pdf / .txt</small>
+    <small>.docx / .doc / .pdf / .txt / .rtf / .md</small>
   </button>
 </template>

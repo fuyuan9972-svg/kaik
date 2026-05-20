@@ -48,5 +48,7 @@ npm run paperpass:data -- \
 - `.docx`
 - `.doc`，通过 macOS `textutil` 读取
 - `.txt`
+- `.rtf`，通过 macOS `textutil` 读取
+- `.md`
 - `.html`
 - PaperPass 免费版报告目录或 `AIGC检测报告.html`

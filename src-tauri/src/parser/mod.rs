@@ -17,8 +17,9 @@ pub fn parse_file(file_path: &str) -> anyhow::Result<Vec<Paragraph>> {
 
     let raw = match ext.as_str() {
         "docx" => docx::parse(path)?,
+        "doc" | "rtf" => parse_with_textutil(path)?,
         "pdf" => pdf::parse(path)?,
-        "txt" => txt::parse(path)?,
+        "txt" | "md" => txt::parse(path)?,
         _ => bail!("unsupported file type: .{}", ext),
     };
 
@@ -51,6 +52,20 @@ pub fn split_text_to_paragraphs(text: &str) -> Vec<(String, ParagraphStyle)> {
         .filter(|line| !line.is_empty())
         .map(|line| (line.to_string(), ParagraphStyle::default()))
         .collect()
+}
+
+fn parse_with_textutil(path: &Path) -> anyhow::Result<Vec<(String, ParagraphStyle)>> {
+    let output = std::process::Command::new("textutil")
+        .args(["-convert", "txt", "-stdout", "--"])
+        .arg(path)
+        .output()
+        .with_context(|| format!("unable to run textutil for {}", path.display()))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        bail!("unable to convert {} with textutil: {}", path.display(), stderr);
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(split_text_to_paragraphs(&text))
 }
 
 fn skip_info(text: &str) -> (bool, Option<String>) {
