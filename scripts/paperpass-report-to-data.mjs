@@ -406,12 +406,17 @@ function buildRewriteGuidance(reduce, segments, riskTypes) {
   const top = segments.slice(0, 3).map((segment) => compact(segment.text, 70)).join(" / ");
   const severity = hasHigh ? "仍有高疑似片段，优先做命中段重写" : "高疑似为0，优先精修中低风险片段，不要继续全篇大扩写";
   const ratioGuidance =
-    (nullableNumber(reduce.totalSuspectedTextRatio) ?? 100) <= 18 &&
-    (nullableNumber(reduce.highSuspectedTextRatio) ?? 100) <= 3 &&
-    (nullableNumber(reduce.middleSuspectedTextRatio) ?? 100) <= 8.5 &&
-    segments.length <= 14
-      ? "这类15%左右成功报告说明，少量高疑似片段可以接受，关键是继续压低中疑似包装段占比。"
-      : "";
+    (nullableNumber(reduce.totalSuspectedTextRatio) ?? 100) <= 10 &&
+    (nullableNumber(reduce.highSuspectedTextRatio) ?? 100) <= 0.1 &&
+    (nullableNumber(reduce.middleSuspectedTextRatio) ?? 100) <= 4.5 &&
+    segments.length <= 12
+      ? "这类10%内强成功报告说明，17 2.0经过测试20段后叠加全文可以进入极低PP区间，少量致谢、问卷说明和定义解释命中不代表失败。"
+      : (nullableNumber(reduce.totalSuspectedTextRatio) ?? 100) <= 18 &&
+          (nullableNumber(reduce.highSuspectedTextRatio) ?? 100) <= 3 &&
+          (nullableNumber(reduce.middleSuspectedTextRatio) ?? 100) <= 8.5 &&
+          segments.length <= 14
+        ? "这类15%左右成功报告说明，少量高疑似片段可以接受，关键是继续压低中疑似包装段占比。"
+        : "";
   return `${severity}。${ratioGuidance}当前成功链路应按“测试20段后叠加全文”理解，不按普通整篇直跑归因。重点拆散${riskTypes.join("、") || "完整包装段"}，把表格/数据解释、文献综述、理论定义、条目解释、案例完整包装和致谢作文腔改得更分散、更具体。典型命中：${top}`;
 }
 

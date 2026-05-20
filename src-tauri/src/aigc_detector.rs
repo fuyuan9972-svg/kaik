@@ -238,6 +238,9 @@ fn blended_correction(analysis: &AigcAnalysis, rules: &[AigcCalibrationRule]) ->
         if rule.id == "low-ratio-success-report" && !matches_low_ratio_success_profile(analysis) {
             continue;
         }
+        if rule.id == "strong-success-report" && !matches_strong_success_profile(analysis) {
+            continue;
+        }
         let weight = (rule.confidence / 100.0).clamp(0.15, 1.0) * rule.sample_count as f32;
         weighted += rule.correction * weight;
         weight_sum += weight;
@@ -285,6 +288,16 @@ fn matches_low_ratio_success_profile(analysis: &AigcAnalysis) -> bool {
         && metrics.plain_terms_per_10k >= 170.0
         && metrics.avg_sentence_len <= 48.0
         && metrics.avg_paragraph_len <= 230.0
+}
+
+fn matches_strong_success_profile(analysis: &AigcAnalysis) -> bool {
+    let metrics = &analysis.metrics;
+    analysis.estimated_aigc >= 18.0
+        && analysis.estimated_aigc <= 34.0
+        && metrics.ai_terms_per_10k <= 4.5
+        && metrics.connectors_per_10k <= 30.0
+        && metrics.plain_terms_per_10k >= 170.0
+        && metrics.avg_sentence_len <= 44.0
 }
 
 fn calibration_summary(
