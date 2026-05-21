@@ -575,6 +575,11 @@ fn looks_appendix_like_segment(text: &str) -> bool {
         "填写结果",
         "感谢您参加这次访谈",
         "再次感谢您的参与",
+        "本人声明",
+        "原创性声明",
+        "独创性声明",
+        "法律结果由本人承担",
+        "版权使用授权书",
     ]
     .iter()
     .any(|term| compact.contains(term));

@@ -82,6 +82,7 @@ const CONNECTORS = [
 const RISK_TYPES = [
   ["问卷访谈提纲命中", ["请简要介绍", "您此次", "使用频率如何", "哪些体验较差", "具体建议", "访谈前", "访谈中", "追问细节", "问卷"]],
   ["参考文献命中", ["[J]", "[D]", "[N]", "旅游纵览", "智能城市", "西部旅游", "燕山大学", "吉林大学"]],
+  ["声明授权命中", ["本人声明", "学位论文", "原创性声明", "独创性声明", "法律结果由本人承担", "版权使用授权书"]],
   ["文献综述包装段", ["国内外研究", "研究动态", "文献", "已有研究"]],
   ["理论定义包装段", ["理论", "概念", "模型", "维度", "体系"]],
   ["数据解释包装段", ["数据", "比例", "得分", "评分", "投诉量", "表"]],
@@ -436,6 +437,11 @@ function looksAppendixSegment(text) {
     "感谢您参加这次访谈",
     "访谈时间大概",
     "再次感谢您的参与",
+    "本人声明",
+    "原创性声明",
+    "独创性声明",
+    "法律结果由本人承担",
+    "版权使用授权书",
   ];
   const numberedQuestions = (text.match(/\d+[.．、]/g) ?? []).length;
   return (
@@ -453,33 +459,41 @@ function buildAnalysisSummary(reduce, segments, riskTypes) {
 }
 
 function buildRewriteGuidance(reduce, segments, riskTypes) {
-  const hasHigh = (nullableNumber(reduce.highSuspectedTextRatio) ?? 0) > 0;
+  const totalRatio = nullableNumber(reduce.totalSuspectedTextRatio) ?? 100;
+  const highRatio = nullableNumber(reduce.highSuspectedTextRatio) ?? 100;
+  const middleRatio = nullableNumber(reduce.middleSuspectedTextRatio) ?? 100;
+  const hasHigh = highRatio > 0;
   const bodySegments = segments.filter((segment) => segment.segmentKind === "body");
   const appendixLikeCount = segments.length - bodySegments.length;
   const top = segments.slice(0, 3).map((segment) => compact(segment.text, 70)).join(" / ");
-  const severity = hasHigh ? "仍有高疑似片段，优先做命中段重写" : "高疑似为0，优先精修中低风险片段，不要继续全篇大扩写";
+  const severity =
+    totalRatio < 20
+      ? "PP低于20%，按当前目标已经过线；已走17 2.0叠加全文的稿子不建议继续改写"
+      : hasHigh
+        ? "仍有高疑似片段，优先做命中正文段定向改写"
+        : "高疑似为0，优先处理中低风险正文片段，不要继续全篇大扩写";
   const appendixGuidance =
-    appendixLikeCount >= 5 && (nullableNumber(reduce.totalSuspectedTextRatio) ?? 100) <= 12
+    appendixLikeCount >= 5 && totalRatio <= 12
       ? `本报告有${appendixLikeCount}个问卷/访谈/参考文献类命中，正文有效命中约${bodySegments.length}个；这类附录型命中不应按正文失败处理。`
       : "";
   const ratioGuidance =
-    (nullableNumber(reduce.totalSuspectedTextRatio) ?? 100) <= 10 &&
-    (nullableNumber(reduce.highSuspectedTextRatio) ?? 100) <= 0.1 &&
-    (nullableNumber(reduce.middleSuspectedTextRatio) ?? 100) <= 4.5 &&
+    totalRatio <= 10 &&
+    highRatio <= 0.1 &&
+    middleRatio <= 4.5 &&
     segments.length <= 12
       ? "这类10%内强成功报告说明，17 2.0经过测试20段后叠加全文可以进入极低PP区间，少量致谢、问卷说明和定义解释命中不代表失败。"
-      : (nullableNumber(reduce.totalSuspectedTextRatio) ?? 100) <= 18 &&
-          (nullableNumber(reduce.highSuspectedTextRatio) ?? 100) <= 3 &&
-          (nullableNumber(reduce.middleSuspectedTextRatio) ?? 100) <= 8.5 &&
+      : totalRatio <= 18 &&
+          highRatio <= 3 &&
+          middleRatio <= 8.5 &&
           segments.length <= 14
-        ? "这类15%左右成功报告说明，少量高疑似片段可以接受，关键是继续压低中疑似包装段占比。"
-        : (nullableNumber(reduce.totalSuspectedTextRatio) ?? 100) <= 18 &&
-            (nullableNumber(reduce.highSuspectedTextRatio) ?? 100) <= 0.1 &&
-            (nullableNumber(reduce.middleSuspectedTextRatio) ?? 100) <= 15 &&
+        ? "这类15%左右成功报告说明，17 2.0叠加全文已达到过线目标；少量高/中/低疑似片段可以接受，不必为了追低分继续改。"
+        : totalRatio <= 18 &&
+            highRatio <= 0.1 &&
+            middleRatio <= 15 &&
             bodySegments.length <= 12
-          ? "这类零高疑似、16%左右报告属于低占比成功边界：正文中疑似仍集中在文献综述、案例观察、理论定义和数据说明，后续应只精修这些中疑似正文段，不要推翻整篇链路。"
+          ? "这类零高疑似、16%左右报告属于低占比成功边界：正文中疑似仍集中在文献综述、案例观察、理论定义和数据说明；已改写稿可直接停止，未改写原稿才按这些命中段定向处理。"
         : "";
-  return `${severity}。${ratioGuidance}${appendixGuidance}当前成功链路应按“测试20段后叠加全文”理解，不按普通整篇直跑归因。重点拆散${riskTypes.join("、") || "完整包装段"}，把表格/数据解释、文献综述、理论定义、条目解释、案例完整包装和致谢作文腔改得更分散、更具体。典型命中：${top}`;
+  return `${severity}。${ratioGuidance}${appendixGuidance}当前成功链路应按“测试20段后叠加全文”理解，不按普通整篇直跑归因。若是未改写原稿先跑PP或PP仍高于20，再重点拆散${riskTypes.join("、") || "完整包装段"}，把表格/数据解释、文献综述、理论定义、条目解释和案例完整包装改得更分散、更具体。典型命中：${top}`;
 }
 
 function compact(text, limit) {
