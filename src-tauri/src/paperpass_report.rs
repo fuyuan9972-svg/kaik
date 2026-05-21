@@ -13,11 +13,12 @@ const RISK_TYPES: &[(&str, &[&str])] = &[
             "您此次",
             "使用频率如何",
             "哪些体验较差",
-            "具体建议",
+            "有哪些具体建议",
             "访谈前",
             "访谈中",
             "追问细节",
-            "问卷",
+            "这份问卷",
+            "填写结果",
         ],
     ),
     (
@@ -367,7 +368,9 @@ fn build_rewrite_guidance(
     } else {
         String::new()
     };
-    let ratio_guidance = if total <= 10.0 && high <= 0.1 && middle <= 4.5 && segments.len() <= 12 {
+    let ratio_guidance = if total <= 10.0 && high <= 2.0 && middle <= 5.0 && body_count <= 6 {
+        "这类10%内PP定向改写成功报告说明，按报告命中正文段处理后可以进入强成功区间；残留高/中疑似多集中在文献定义、引用综述和少量参考文献，不需要继续整篇追低。"
+    } else if total <= 10.0 && high <= 0.1 && middle <= 4.5 && segments.len() <= 12 {
         "这类10%内强成功报告说明，17 2.0经过测试20段后叠加全文可以进入极低PP区间，少量致谢、问卷说明和定义解释命中不代表失败。"
     } else if total <= 18.0 && high <= 3.0 && middle <= 8.5 && segments.len() <= 14 {
         "这类15%左右成功报告说明，17 2.0叠加全文已达到过线目标；少量高/中/低疑似片段可以接受，不必为了追低分继续改。"
