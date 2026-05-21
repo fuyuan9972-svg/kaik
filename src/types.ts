@@ -246,6 +246,7 @@ export interface ExternalAigcReportSegment {
   text: string;
   suspectedChars: number;
   suspectedRatio: number;
+  segmentKind?: "body" | "appendix" | "reference" | string;
 }
 
 export interface ExternalAigcReportEvidence {
@@ -261,6 +262,9 @@ export interface ExternalAigcReportEvidence {
   noAiSuspectedRatio?: number | null;
   humanWrittenRate?: number | null;
   suspiciousSegmentCount: number;
+  bodySuspiciousSegmentCount?: number | null;
+  appendixLikeSegmentCount?: number | null;
+  referenceSegmentCount?: number | null;
   markedSpanCount: number;
   markedChars: number;
   severeSegmentCount: number;

@@ -308,6 +308,8 @@ pub struct ExternalAigcReportSegment {
     pub text: String,
     pub suspected_chars: usize,
     pub suspected_ratio: f32,
+    #[serde(default)]
+    pub segment_kind: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -336,6 +338,12 @@ pub struct ExternalAigcReportEvidence {
     pub human_written_rate: Option<f32>,
     #[serde(default)]
     pub suspicious_segment_count: usize,
+    #[serde(default)]
+    pub body_suspicious_segment_count: Option<usize>,
+    #[serde(default)]
+    pub appendix_like_segment_count: Option<usize>,
+    #[serde(default)]
+    pub reference_segment_count: Option<usize>,
     #[serde(default)]
     pub marked_span_count: usize,
     #[serde(default)]

@@ -80,6 +80,8 @@ const CONNECTORS = [
 ];
 
 const RISK_TYPES = [
+  ["问卷访谈提纲命中", ["请简要介绍", "您此次", "使用频率如何", "哪些体验较差", "具体建议", "访谈前", "访谈中", "追问细节", "问卷"]],
+  ["参考文献命中", ["[J]", "[D]", "[N]", "旅游纵览", "智能城市", "西部旅游", "燕山大学", "吉林大学"]],
   ["文献综述包装段", ["国内外研究", "研究动态", "文献", "已有研究"]],
   ["理论定义包装段", ["理论", "概念", "模型", "维度", "体系"]],
   ["数据解释包装段", ["数据", "比例", "得分", "评分", "投诉量", "表"]],
@@ -341,6 +343,7 @@ function parsePaperPassReport(reportPath) {
         text,
         suspectedChars: cjkCount(text),
         suspectedRatio: round(ratio, 2),
+        segmentKind: classifySegmentKind(text),
       };
     })
     .filter((item) => item.text)
@@ -361,6 +364,9 @@ function parsePaperPassReport(reportPath) {
     humanWrittenRate:
       reduce.totalSuspectedTextRatio == null ? null : round(100 - Number(reduce.totalSuspectedTextRatio), 2),
     suspiciousSegmentCount: segments.length,
+    bodySuspiciousSegmentCount: segments.filter((item) => item.segmentKind === "body").length,
+    appendixLikeSegmentCount: segments.filter((item) => item.segmentKind === "appendix").length,
+    referenceSegmentCount: segments.filter((item) => item.segmentKind === "reference").length,
     markedSpanCount: 0,
     markedChars: segments.reduce((sum, item) => sum + item.suspectedChars, 0),
     severeSegmentCount: segments.filter((item) => item.suspectedRatio >= 70).length,
@@ -393,6 +399,51 @@ function inferRiskTypes(segments) {
   return [...found];
 }
 
+function classifySegmentKind(text) {
+  const compact = text.replace(/\s+/g, "");
+  if (looksReferenceSegment(compact)) return "reference";
+  if (looksAppendixSegment(compact)) return "appendix";
+  return "body";
+}
+
+function looksReferenceSegment(text) {
+  const referenceMarkers = (text.match(/\[[JDMN]\]/g) ?? []).length;
+  return (
+    referenceMarkers >= 1 ||
+    /[，,.]\d{4}[，,.(（]/.test(text) ||
+    text.includes("旅游纵览") ||
+    text.includes("智能城市") ||
+    text.includes("西部旅游") ||
+    text.includes("燕山大学") ||
+    text.includes("吉林大学")
+  );
+}
+
+function looksAppendixSegment(text) {
+  const questionSignals = [
+    "请简要介绍",
+    "是否使用",
+    "使用频率如何",
+    "哪些体验较差",
+    "有哪些具体建议",
+    "通常咨询哪些",
+    "根据您的观察",
+    "访谈前",
+    "访谈中",
+    "结束后及时整理",
+    "这份问卷",
+    "填写结果",
+    "感谢您参加这次访谈",
+    "访谈时间大概",
+    "再次感谢您的参与",
+  ];
+  const numberedQuestions = (text.match(/\d+[.．、]/g) ?? []).length;
+  return (
+    questionSignals.some((term) => text.includes(term)) ||
+    (numberedQuestions >= 3 && (text.includes("您") || text.includes("访谈") || text.includes("问卷")))
+  );
+}
+
 function buildAnalysisSummary(reduce, segments, riskTypes) {
   const total = nullableNumber(reduce.totalSuspectedTextRatio);
   const high = nullableNumber(reduce.highSuspectedTextRatio) ?? 0;
@@ -403,8 +454,14 @@ function buildAnalysisSummary(reduce, segments, riskTypes) {
 
 function buildRewriteGuidance(reduce, segments, riskTypes) {
   const hasHigh = (nullableNumber(reduce.highSuspectedTextRatio) ?? 0) > 0;
+  const bodySegments = segments.filter((segment) => segment.segmentKind === "body");
+  const appendixLikeCount = segments.length - bodySegments.length;
   const top = segments.slice(0, 3).map((segment) => compact(segment.text, 70)).join(" / ");
   const severity = hasHigh ? "仍有高疑似片段，优先做命中段重写" : "高疑似为0，优先精修中低风险片段，不要继续全篇大扩写";
+  const appendixGuidance =
+    appendixLikeCount >= 5 && (nullableNumber(reduce.totalSuspectedTextRatio) ?? 100) <= 12
+      ? `本报告有${appendixLikeCount}个问卷/访谈/参考文献类命中，正文有效命中约${bodySegments.length}个；这类附录型命中不应按正文失败处理。`
+      : "";
   const ratioGuidance =
     (nullableNumber(reduce.totalSuspectedTextRatio) ?? 100) <= 10 &&
     (nullableNumber(reduce.highSuspectedTextRatio) ?? 100) <= 0.1 &&
@@ -417,7 +474,7 @@ function buildRewriteGuidance(reduce, segments, riskTypes) {
           segments.length <= 14
         ? "这类15%左右成功报告说明，少量高疑似片段可以接受，关键是继续压低中疑似包装段占比。"
         : "";
-  return `${severity}。${ratioGuidance}当前成功链路应按“测试20段后叠加全文”理解，不按普通整篇直跑归因。重点拆散${riskTypes.join("、") || "完整包装段"}，把表格/数据解释、文献综述、理论定义、条目解释、案例完整包装和致谢作文腔改得更分散、更具体。典型命中：${top}`;
+  return `${severity}。${ratioGuidance}${appendixGuidance}当前成功链路应按“测试20段后叠加全文”理解，不按普通整篇直跑归因。重点拆散${riskTypes.join("、") || "完整包装段"}，把表格/数据解释、文献综述、理论定义、条目解释、案例完整包装和致谢作文腔改得更分散、更具体。典型命中：${top}`;
 }
 
 function compact(text, limit) {

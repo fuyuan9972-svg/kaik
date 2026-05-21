@@ -158,6 +158,16 @@ pub fn external_report_guidance(records: &[AigcFeedbackRecord]) -> String {
         .filter_map(|record| record.external_report.as_ref())
         .map(|report| report.suspicious_segment_count)
         .sum::<usize>();
+    let appendix_like_count = reports
+        .iter()
+        .filter_map(|record| record.external_report.as_ref())
+        .map(appendix_like_segment_count)
+        .sum::<usize>();
+    let body_segment_count = reports
+        .iter()
+        .filter_map(|record| record.external_report.as_ref())
+        .map(body_suspicious_segment_count)
+        .sum::<usize>();
     let marked_count = reports
         .iter()
         .filter_map(|record| record.external_report.as_ref())
@@ -195,8 +205,15 @@ pub fn external_report_guidance(records: &[AigcFeedbackRecord]) -> String {
         .iter()
         .filter(|record| feedback_provider(record) == "paperpass")
         .count();
+    let appendix_summary = if appendix_like_count > 0 {
+        format!(
+            " 其中约 {appendix_like_count} 个为问卷/访谈/参考文献/致谢等附录型命中，正文有效命中约 {body_segment_count} 个；低PP报告里这类片段不应按正文失败处理。"
+        )
+    } else {
+        String::new()
+    };
     format!(
-        "{WEIPU_GUIDANCE}\n本地已记录 {report_count} 条外部报告证据，其中 PaperPass 报告 {paperpass_reports} 条，共 {segment_count} 个疑似片段、{marked_count} 处正文标注；高频风险类型：{risk_summary}。{snippet_summary}"
+        "{WEIPU_GUIDANCE}\n本地已记录 {report_count} 条外部报告证据，其中 PaperPass 报告 {paperpass_reports} 条，共 {segment_count} 个疑似片段、{marked_count} 处正文标注；高频风险类型：{risk_summary}。{appendix_summary}{snippet_summary}"
     )
 }
 
@@ -377,10 +394,11 @@ pub fn build_rules(records: &[AigcFeedbackRecord]) -> Vec<AigcCalibrationRule> {
                 .external_report
                 .as_ref()
                 .map(|report| {
+                    let effective_segments = effective_body_segment_count(report);
                     report.total_suspected_ratio.unwrap_or(record.measured_aigc) <= 18.0
                         && report.high_suspected_ratio.unwrap_or(0.0) <= 3.0
                         && report.middle_suspected_ratio.unwrap_or(0.0) <= 8.5
-                        && report.suspicious_segment_count <= 14
+                        && effective_segments <= 14
                 })
                 .unwrap_or(false)
         })
@@ -398,7 +416,7 @@ pub fn build_rules(records: &[AigcFeedbackRecord]) -> Vec<AigcCalibrationRule> {
             recommended_strategy: "成功链路17 2.0".to_string(),
             confidence: (low_ratio_success_reports.len() as f32 * 16.0).clamp(30.0, 82.0),
             sample_count: low_ratio_success_reports.len(),
-            summary: "15%左右成功报告主要来自“测试20段后叠加全文”链路；少量中低疑似解释段并不代表整体失败，只要高疑似占比低、中疑似可控、命中片段少，检测应向低风险区间靠拢。".to_string(),
+            summary: "15%左右成功报告主要来自“测试20段后叠加全文”链路；少量中低疑似解释段、问卷/访谈提纲、参考文献或致谢类命中不代表整体失败，只要高疑似占比低、中疑似可控、正文有效命中片段少，检测应向低风险区间靠拢。".to_string(),
             updated_at: current_timestamp(),
         });
     }
@@ -466,6 +484,76 @@ fn compact_snippet(text: &str, limit: usize) -> String {
         output.push(ch);
     }
     output
+}
+
+fn effective_body_segment_count(report: &crate::models::ExternalAigcReportEvidence) -> usize {
+    report.body_suspicious_segment_count.unwrap_or_else(|| {
+        report
+            .suspicious_segment_count
+            .saturating_sub(appendix_like_segment_count(report))
+    })
+}
+
+fn body_suspicious_segment_count(report: &crate::models::ExternalAigcReportEvidence) -> usize {
+    report.body_suspicious_segment_count.unwrap_or_else(|| {
+        report
+            .suspicious_segment_count
+            .saturating_sub(appendix_like_segment_count(report))
+    })
+}
+
+fn appendix_like_segment_count(report: &crate::models::ExternalAigcReportEvidence) -> usize {
+    let explicit = report.appendix_like_segment_count.unwrap_or(0)
+        + report.reference_segment_count.unwrap_or(0);
+    if explicit > 0 {
+        return explicit;
+    }
+    report
+        .segments
+        .iter()
+        .filter(|segment| {
+            matches!(
+                segment.segment_kind.as_deref(),
+                Some("appendix") | Some("reference")
+            ) || looks_appendix_like_segment(&segment.text)
+        })
+        .count()
+}
+
+fn looks_appendix_like_segment(text: &str) -> bool {
+    let compact = text.split_whitespace().collect::<String>();
+    let numbered = compact.matches('.').count()
+        + compact.matches('．').count()
+        + compact.matches('、').count();
+    let question_like = [
+        "请简要介绍",
+        "是否使用",
+        "使用频率如何",
+        "哪些体验较差",
+        "具体建议",
+        "通常咨询",
+        "根据您的观察",
+        "访谈前",
+        "访谈中",
+        "这份问卷",
+        "填写结果",
+        "感谢您参加这次访谈",
+        "再次感谢您的参与",
+    ]
+    .iter()
+    .any(|term| compact.contains(term));
+    let reference_like = compact.contains("[J]")
+        || compact.contains("[D]")
+        || compact.contains("[N]")
+        || compact.contains("旅游纵览")
+        || compact.contains("智能城市")
+        || compact.contains("西部旅游")
+        || compact.contains("燕山大学")
+        || compact.contains("吉林大学");
+    reference_like
+        || question_like
+        || (numbered >= 3
+            && (compact.contains('您') || compact.contains("访谈") || compact.contains("问卷")))
 }
 
 fn is_real_estimation_feedback(record: &AigcFeedbackRecord) -> bool {
