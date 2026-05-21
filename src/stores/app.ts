@@ -158,10 +158,7 @@ export const useAppStore = defineStore("app", {
         if (loadedConfig.promptProfile === "sample_calibrated_17") {
           loadedConfig.promptProfile = "sample_calibrated_17_v2";
         }
-        if (
-          loadedConfig.promptProfile !== "sample_calibrated_17_v2" &&
-          loadedConfig.promptProfile !== "sample_calibrated_17_success"
-        ) {
+        if (loadedConfig.promptProfile !== "sample_calibrated_17_v2") {
           loadedConfig.promptProfile = "sample_calibrated_17_v2";
         }
         if (!loadedConfig.detectModel?.trim()) {
@@ -788,12 +785,7 @@ export const useAppStore = defineStore("app", {
     },
 
     ensureDefaultRewriteFlow() {
-      if (
-        this.config.promptProfile !== "sample_calibrated_17_v2" &&
-        this.config.promptProfile !== "sample_calibrated_17_success"
-      ) {
-        this.config.promptProfile = "sample_calibrated_17_v2";
-      }
+      this.config.promptProfile = "sample_calibrated_17_v2";
       this.currentAiRate = DEFAULT_CURRENT_AI_RATE;
       this.targetAiRate = DEFAULT_TARGET_AI_RATE;
     },
