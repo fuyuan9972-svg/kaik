@@ -1,6 +1,6 @@
 use crate::models::{
     AigcCalibrationRule, AigcDetectionSnapshot, AigcFeedbackInput, AigcFeedbackRecord, AigcMetrics,
-    AigcMetricsDelta, ApiConfig,
+    AigcMetricsDelta, ApiConfig, ExternalAigcReportComparison, ExternalAigcReportEvidence,
 };
 use anyhow::Context;
 use reqwest::Client;
@@ -41,7 +41,12 @@ pub fn create_feedback_record(
     let rewritten_estimate = rewritten.map(|snapshot| snapshot.analysis.estimated_aigc);
     let measured = input.measured_aigc.clamp(0.0, 100.0);
     let now = current_timestamp();
-    let provider = normalized_provider(input.provider.as_deref(), input.external_report.as_ref());
+    let external_report = input
+        .after_external_report
+        .clone()
+        .or_else(|| input.external_report.clone())
+        .or_else(|| input.before_external_report.clone());
+    let provider = normalized_provider(input.provider.as_deref(), external_report.as_ref());
     let estimated_drop = match (original_estimate, rewritten_estimate) {
         (Some(original), Some(rewritten)) => Some(round2(original - rewritten)),
         _ => None,
@@ -71,10 +76,17 @@ pub fn create_feedback_record(
         estimated_drop,
         metrics_delta,
         ai_review: None,
-        external_report: input.external_report,
+        external_report,
+        before_external_report: input.before_external_report,
+        after_external_report: input.after_external_report,
+        report_comparison: None,
         created_at: now.clone(),
         updated_at: now,
     };
+    record.report_comparison = report_comparison(
+        record.before_external_report.as_ref(),
+        record.after_external_report.as_ref(),
+    );
     record.ai_review = Some(default_feedback_review(&record));
     Ok(record)
 }
@@ -106,6 +118,9 @@ pub async fn review_feedback_with_ai(
         "estimatedDrop": record.estimated_drop,
         "metricsDelta": record.metrics_delta,
         "externalReport": record.external_report,
+        "beforeExternalReport": record.before_external_report,
+        "afterExternalReport": record.after_external_report,
+        "reportComparison": record.report_comparison,
     }))
     .context("unable to serialize feedback review payload")?;
     let output = crate::rewriter::complete_once(
@@ -146,7 +161,11 @@ fn feedback_review_prompt() -> &'static str {
 pub fn external_report_guidance(records: &[AigcFeedbackRecord]) -> String {
     let reports: Vec<&AigcFeedbackRecord> = records
         .iter()
-        .filter(|record| record.external_report.is_some())
+        .filter(|record| {
+            record.external_report.is_some()
+                || record.before_external_report.is_some()
+                || record.after_external_report.is_some()
+        })
         .collect();
     if reports.is_empty() {
         return String::new();
@@ -155,28 +174,28 @@ pub fn external_report_guidance(records: &[AigcFeedbackRecord]) -> String {
     let report_count = reports.len();
     let segment_count = reports
         .iter()
-        .filter_map(|record| record.external_report.as_ref())
+        .filter_map(|record| primary_report(record))
         .map(|report| report.suspicious_segment_count)
         .sum::<usize>();
     let appendix_like_count = reports
         .iter()
-        .filter_map(|record| record.external_report.as_ref())
+        .filter_map(|record| primary_report(record))
         .map(appendix_like_segment_count)
         .sum::<usize>();
     let body_segment_count = reports
         .iter()
-        .filter_map(|record| record.external_report.as_ref())
+        .filter_map(|record| primary_report(record))
         .map(body_suspicious_segment_count)
         .sum::<usize>();
     let marked_count = reports
         .iter()
-        .filter_map(|record| record.external_report.as_ref())
+        .filter_map(|record| primary_report(record))
         .map(|report| report.marked_span_count)
         .sum::<usize>();
     let mut risk_types = Vec::new();
     for report in reports
         .iter()
-        .filter_map(|record| record.external_report.as_ref())
+        .filter_map(|record| primary_report(record))
     {
         for risk_type in &report.risk_types {
             if !risk_types.iter().any(|item: &String| item == risk_type) {
@@ -191,7 +210,7 @@ pub fn external_report_guidance(records: &[AigcFeedbackRecord]) -> String {
     };
     let snippets = reports
         .iter()
-        .filter_map(|record| record.external_report.as_ref())
+        .filter_map(|record| primary_report(record))
         .flat_map(|report| report.segments.iter())
         .take(4)
         .map(|segment| compact_snippet(&segment.text, 90))
@@ -215,6 +234,14 @@ pub fn external_report_guidance(records: &[AigcFeedbackRecord]) -> String {
     format!(
         "{WEIPU_GUIDANCE}\n本地已记录 {report_count} 条外部报告证据，其中 PaperPass 报告 {paperpass_reports} 条，共 {segment_count} 个疑似片段、{marked_count} 处正文标注；高频风险类型：{risk_summary}。{appendix_summary}{snippet_summary}"
     )
+}
+
+fn primary_report(record: &AigcFeedbackRecord) -> Option<&ExternalAigcReportEvidence> {
+    record
+        .after_external_report
+        .as_ref()
+        .or(record.external_report.as_ref())
+        .or(record.before_external_report.as_ref())
 }
 
 fn metrics_delta(original: &AigcMetrics, rewritten: &AigcMetrics) -> AigcMetricsDelta {
@@ -556,6 +583,118 @@ fn appendix_like_segment_count(report: &crate::models::ExternalAigcReportEvidenc
         .count()
 }
 
+fn report_comparison(
+    before: Option<&ExternalAigcReportEvidence>,
+    after: Option<&ExternalAigcReportEvidence>,
+) -> Option<ExternalAigcReportComparison> {
+    let before = before?;
+    let after = after?;
+    let before_total = before.total_suspected_ratio.or(before.report_score);
+    let after_total = after.total_suspected_ratio.or(after.report_score);
+    let before_body = body_segment_signatures(before);
+    let after_body = body_segment_signatures(after);
+    let removed = before_body
+        .iter()
+        .filter(|signature| !after_body.contains(*signature))
+        .count();
+    let persistent = before_body
+        .iter()
+        .filter(|signature| after_body.contains(*signature))
+        .count();
+    let added = after_body
+        .iter()
+        .filter(|signature| !before_body.contains(*signature))
+        .count();
+    let before_risks = before.risk_types.clone();
+    let after_risks = after.risk_types.clone();
+    let removed_risk_types = before_risks
+        .iter()
+        .filter(|risk| !after_risks.contains(*risk))
+        .cloned()
+        .collect::<Vec<_>>();
+    let persistent_risk_types = before_risks
+        .iter()
+        .filter(|risk| after_risks.contains(*risk))
+        .cloned()
+        .collect::<Vec<_>>();
+    let added_risk_types = after_risks
+        .iter()
+        .filter(|risk| !before_risks.contains(*risk))
+        .cloned()
+        .collect::<Vec<_>>();
+    let total_delta = match (before_total, after_total) {
+        (Some(before), Some(after)) => Some(round2(after - before)),
+        _ => None,
+    };
+    let summary = match total_delta {
+        Some(delta) if delta < 0.0 => format!(
+            "PP总疑似下降 {:.2} 个百分点；正文命中由 {} 段变为 {} 段，消失 {} 段、残留 {} 段、新增 {} 段。",
+            delta.abs(),
+            before_body.len(),
+            after_body.len(),
+            removed,
+            persistent,
+            added
+        ),
+        Some(delta) if delta > 0.0 => format!(
+            "PP总疑似上升 {:.2} 个百分点；正文命中由 {} 段变为 {} 段，消失 {} 段、残留 {} 段、新增 {} 段。",
+            delta,
+            before_body.len(),
+            after_body.len(),
+            removed,
+            persistent,
+            added
+        ),
+        Some(_) => format!(
+            "PP总疑似基本持平；正文命中由 {} 段变为 {} 段，消失 {} 段、残留 {} 段、新增 {} 段。",
+            before_body.len(),
+            after_body.len(),
+            removed,
+            persistent,
+            added
+        ),
+        None => format!(
+            "已生成PP报告命中对比；正文命中由 {} 段变为 {} 段，消失 {} 段、残留 {} 段、新增 {} 段。",
+            before_body.len(),
+            after_body.len(),
+            removed,
+            persistent,
+            added
+        ),
+    };
+    Some(ExternalAigcReportComparison {
+        before_total_ratio: before_total,
+        after_total_ratio: after_total,
+        total_ratio_delta: total_delta,
+        before_body_segment_count: before_body.len(),
+        after_body_segment_count: after_body.len(),
+        removed_body_segment_count: removed,
+        persistent_body_segment_count: persistent,
+        added_body_segment_count: added,
+        removed_risk_types,
+        persistent_risk_types,
+        added_risk_types,
+        summary,
+    })
+}
+
+fn body_segment_signatures(report: &ExternalAigcReportEvidence) -> Vec<String> {
+    report
+        .segments
+        .iter()
+        .filter(|segment| segment.segment_kind.as_deref() == Some("body"))
+        .map(|segment| segment_signature(&segment.text))
+        .filter(|signature| !signature.is_empty())
+        .collect()
+}
+
+fn segment_signature(text: &str) -> String {
+    text.chars()
+        .filter(|ch| ch.is_ascii_alphanumeric() || ('\u{4e00}'..='\u{9fff}').contains(ch))
+        .take(80)
+        .collect()
+}
+
 fn looks_appendix_like_segment(text: &str) -> bool {
     let compact = text.split_whitespace().collect::<String>();
     let numbered = compact.matches('.').count()
@@ -650,12 +789,21 @@ fn default_feedback_review(record: &AigcFeedbackRecord) -> String {
             )
         })
         .unwrap_or_default();
-    format!("{pair_summary} {error_summary}{report_summary}")
+    let comparison_summary = record
+        .report_comparison
+        .as_ref()
+        .map(|comparison| format!(" {}", comparison.summary))
+        .unwrap_or_default();
+    format!("{pair_summary} {error_summary}{report_summary}{comparison_summary}")
 }
 
 fn default_external_report_review(record: &AigcFeedbackRecord) -> String {
     let provider = provider_label(record.provider.as_deref());
-    let report = record.external_report.as_ref();
+    let report = record
+        .after_external_report
+        .as_ref()
+        .or(record.external_report.as_ref())
+        .or(record.before_external_report.as_ref());
     let segment_summary = report
         .map(|value| {
             format!(
@@ -674,10 +822,15 @@ fn default_external_report_review(record: &AigcFeedbackRecord) -> String {
         .unwrap_or_else(|| {
             "后续应优先处理外部报告命中的摘要式、总结式和方案式高风险段。".to_string()
         });
+    let comparison_summary = record
+        .report_comparison
+        .as_ref()
+        .map(|comparison| format!(" {}", comparison.summary))
+        .unwrap_or_default();
     format!(
         "{provider} 实测 AIGC 为 {:.2}%。{segment_summary} {guidance}",
         record.measured_aigc
-    )
+    ) + &comparison_summary
 }
 
 fn best_strategy(records: &[AigcFeedbackRecord]) -> String {

@@ -240,6 +240,8 @@ export interface AigcFeedbackInput {
   round?: string | null;
   note?: string | null;
   externalReport?: ExternalAigcReportEvidence | null;
+  beforeExternalReport?: ExternalAigcReportEvidence | null;
+  afterExternalReport?: ExternalAigcReportEvidence | null;
 }
 
 export interface ExternalAigcReportSegment {
@@ -277,6 +279,21 @@ export interface ExternalAigcReportEvidence {
   rewriteGuidance?: string | null;
 }
 
+export interface ExternalAigcReportComparison {
+  beforeTotalRatio?: number | null;
+  afterTotalRatio?: number | null;
+  totalRatioDelta?: number | null;
+  beforeBodySegmentCount: number;
+  afterBodySegmentCount: number;
+  removedBodySegmentCount: number;
+  persistentBodySegmentCount: number;
+  addedBodySegmentCount: number;
+  removedRiskTypes: string[];
+  persistentRiskTypes: string[];
+  addedRiskTypes: string[];
+  summary: string;
+}
+
 export interface AigcFeedbackRecord {
   id: string;
   measuredAigc: number;
@@ -296,6 +313,9 @@ export interface AigcFeedbackRecord {
   metricsDelta: AigcMetricsDelta | null;
   aiReview: string | null;
   externalReport: ExternalAigcReportEvidence | null;
+  beforeExternalReport?: ExternalAigcReportEvidence | null;
+  afterExternalReport?: ExternalAigcReportEvidence | null;
+  reportComparison?: ExternalAigcReportComparison | null;
   createdAt: string;
   updatedAt: string;
 }

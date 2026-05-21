@@ -301,6 +301,10 @@ pub struct AigcFeedbackInput {
     pub note: Option<String>,
     #[serde(default)]
     pub external_report: Option<ExternalAigcReportEvidence>,
+    #[serde(default)]
+    pub before_external_report: Option<ExternalAigcReportEvidence>,
+    #[serde(default)]
+    pub after_external_report: Option<ExternalAigcReportEvidence>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -366,6 +370,34 @@ pub struct ExternalAigcReportEvidence {
     pub rewrite_guidance: Option<String>,
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExternalAigcReportComparison {
+    #[serde(default)]
+    pub before_total_ratio: Option<f32>,
+    #[serde(default)]
+    pub after_total_ratio: Option<f32>,
+    #[serde(default)]
+    pub total_ratio_delta: Option<f32>,
+    #[serde(default)]
+    pub before_body_segment_count: usize,
+    #[serde(default)]
+    pub after_body_segment_count: usize,
+    #[serde(default)]
+    pub removed_body_segment_count: usize,
+    #[serde(default)]
+    pub persistent_body_segment_count: usize,
+    #[serde(default)]
+    pub added_body_segment_count: usize,
+    #[serde(default)]
+    pub removed_risk_types: Vec<String>,
+    #[serde(default)]
+    pub persistent_risk_types: Vec<String>,
+    #[serde(default)]
+    pub added_risk_types: Vec<String>,
+    pub summary: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AigcFeedbackRecord {
@@ -403,6 +435,12 @@ pub struct AigcFeedbackRecord {
     pub ai_review: Option<String>,
     #[serde(default)]
     pub external_report: Option<ExternalAigcReportEvidence>,
+    #[serde(default)]
+    pub before_external_report: Option<ExternalAigcReportEvidence>,
+    #[serde(default)]
+    pub after_external_report: Option<ExternalAigcReportEvidence>,
+    #[serde(default)]
+    pub report_comparison: Option<ExternalAigcReportComparison>,
     pub created_at: String,
     pub updated_at: String,
 }

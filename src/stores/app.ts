@@ -359,6 +359,12 @@ export const useAppStore = defineStore("app", {
       }
     },
 
+    async parsePaperPassReport(reportPath: string) {
+      return await invoke<ExternalAigcReportEvidence>("parse_paperpass_report", {
+        reportPath,
+      });
+    },
+
     async rewriteByPaperPassReport() {
       if (!this.activeExternalReport) {
         this.error = "请先导入 PaperPass AIGC 报告";
