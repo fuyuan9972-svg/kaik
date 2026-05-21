@@ -421,6 +421,42 @@ pub fn build_rules(records: &[AigcFeedbackRecord]) -> Vec<AigcCalibrationRule> {
         });
     }
 
+    let zero_high_mid_success_reports: Vec<&AigcFeedbackRecord> = usable
+        .iter()
+        .copied()
+        .filter(|record| record.measured_aigc <= 18.0)
+        .filter(|record| record.estimation_error.unwrap_or(0.0) >= 4.0)
+        .filter(|record| {
+            record
+                .external_report
+                .as_ref()
+                .map(|report| {
+                    report.total_suspected_ratio.unwrap_or(record.measured_aigc) <= 18.0
+                        && report.high_suspected_ratio.unwrap_or(0.0) <= 0.1
+                        && report.middle_suspected_ratio.unwrap_or(0.0) <= 15.0
+                        && effective_body_segment_count(report) <= 12
+                })
+                .unwrap_or(false)
+        })
+        .collect();
+    if !zero_high_mid_success_reports.is_empty() {
+        let avg = zero_high_mid_success_reports
+            .iter()
+            .filter_map(|record| record.estimation_error)
+            .sum::<f32>()
+            / zero_high_mid_success_reports.len() as f32;
+        rules.push(AigcCalibrationRule {
+            id: "zero-high-mid-success-report".to_string(),
+            pattern: "零高疑似中疑似边界成功报告".to_string(),
+            correction: round2(-(avg * 0.5).clamp(2.0, 5.5)),
+            recommended_strategy: "成功链路17 2.0".to_string(),
+            confidence: (zero_high_mid_success_reports.len() as f32 * 14.0).clamp(26.0, 74.0),
+            sample_count: zero_high_mid_success_reports.len(),
+            summary: "零高疑似但中疑似仍偏高的16%左右报告，通常说明17 2.0叠加全文已经成功压掉高风险，只剩文献综述、案例观察、理论定义和数据说明等正文中风险段；后续检测可下修到低风险边界，但改写建议应转为精修命中段而非整篇重跑。".to_string(),
+            updated_at: current_timestamp(),
+        });
+    }
+
     rules
 }
 

@@ -473,6 +473,11 @@ function buildRewriteGuidance(reduce, segments, riskTypes) {
           (nullableNumber(reduce.middleSuspectedTextRatio) ?? 100) <= 8.5 &&
           segments.length <= 14
         ? "这类15%左右成功报告说明，少量高疑似片段可以接受，关键是继续压低中疑似包装段占比。"
+        : (nullableNumber(reduce.totalSuspectedTextRatio) ?? 100) <= 18 &&
+            (nullableNumber(reduce.highSuspectedTextRatio) ?? 100) <= 0.1 &&
+            (nullableNumber(reduce.middleSuspectedTextRatio) ?? 100) <= 15 &&
+            bodySegments.length <= 12
+          ? "这类零高疑似、16%左右报告属于低占比成功边界：正文中疑似仍集中在文献综述、案例观察、理论定义和数据说明，后续应只精修这些中疑似正文段，不要推翻整篇链路。"
         : "";
   return `${severity}。${ratioGuidance}${appendixGuidance}当前成功链路应按“测试20段后叠加全文”理解，不按普通整篇直跑归因。重点拆散${riskTypes.join("、") || "完整包装段"}，把表格/数据解释、文献综述、理论定义、条目解释、案例完整包装和致谢作文腔改得更分散、更具体。典型命中：${top}`;
 }
