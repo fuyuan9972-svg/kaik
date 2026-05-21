@@ -55,7 +55,7 @@ export interface RewriteSession {
   sampleLimit: number | null;
   currentAiRate: number | null;
   targetAiRate: number | null;
-  taskType?: "sampleTrial" | "guidedRewrite" | "fullRewrite" | "stackedFullRewrite" | null;
+  taskType?: "sampleTrial" | "guidedRewrite" | "fullRewrite" | "stackedFullRewrite" | "reportGuidedRewrite" | null;
   paragraphs: Paragraph[];
   results: RewriteResult[];
   exportedPath: string | null;
@@ -69,6 +69,7 @@ export interface RewriteOptions {
   currentAiRate?: number | null;
   targetAiRate?: number | null;
   externalReport?: ExternalAigcReportEvidence | null;
+  reportGuided?: boolean;
 }
 
 export interface ApiConfig {

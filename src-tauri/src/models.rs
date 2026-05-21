@@ -57,6 +57,8 @@ pub struct RewriteOptions {
     pub target_ai_rate: Option<f32>,
     #[serde(default)]
     pub external_report: Option<ExternalAigcReportEvidence>,
+    #[serde(default)]
+    pub report_guided: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

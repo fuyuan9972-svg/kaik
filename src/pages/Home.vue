@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { FlaskConical, Gauge, Play, Settings, Square } from "lucide-vue-next";
+import { open } from "@tauri-apps/plugin-dialog";
+import { FileSearch, FlaskConical, Gauge, Play, Settings, Square } from "lucide-vue-next";
 import FileUpload from "../components/FileUpload.vue";
 import ProgressBar from "../components/ProgressBar.vue";
 import { useAppStore } from "../stores/app";
@@ -17,6 +18,22 @@ function formatAiRate(analysis: AigcAnalysis | null) {
 
 function formatAiRange(analysis: AigcAnalysis | null) {
   return analysis ? `${analysis.rangeLow.toFixed(1)}% - ${analysis.rangeHigh.toFixed(1)}%` : "等待混合检测";
+}
+
+async function choosePaperPassReport() {
+  const selected = await open({
+    multiple: false,
+    directory: false,
+    filters: [
+      {
+        name: "PaperPass 报告",
+        extensions: ["html", "htm"],
+      },
+    ],
+  });
+  if (typeof selected === "string") {
+    await store.importPaperPassReport(selected);
+  }
 }
 </script>
 
@@ -71,6 +88,27 @@ function formatAiRange(analysis: AigcAnalysis | null) {
         </p>
       </div>
 
+      <section class="report-guided-card">
+        <div>
+          <span>PP 报告定向改写</span>
+          <p>
+            适合“原稿先过 PP，再按报告命中正文段改写”。已低于 20 的改写稿不建议继续精修。
+          </p>
+        </div>
+        <div v-if="store.activeExternalReport" class="report-guided-summary">
+          <strong>
+            {{ (store.activeExternalReport.totalSuspectedRatio ?? store.activeExternalReport.reportScore ?? 0).toFixed(2) }}%
+          </strong>
+          <small>
+            正文命中 {{ store.reportGuidedBodySegmentCount }} 段，当前匹配 {{ store.reportGuidedIndices.length }} 段
+          </small>
+        </div>
+        <button class="secondary-button" type="button" :disabled="store.loading" @click="choosePaperPassReport">
+          <FileSearch :size="17" />
+          导入 PP 报告
+        </button>
+      </section>
+
       <section v-if="store.aigcAnalysis" class="task-analysis-card">
         <div class="section-heading">
           <span>原稿 AI 混合检测</span>
@@ -110,6 +148,11 @@ function formatAiRange(analysis: AigcAnalysis | null) {
             <strong>{{ formatAiRate(store.directFullAigcAnalysis) }}</strong>
             <small>{{ formatAiRange(store.directFullAigcAnalysis) }}</small>
           </article>
+          <article v-if="store.reportGuidedAigcAnalysis" class="score-card">
+            <span>PP定向后AI率</span>
+            <strong>{{ formatAiRate(store.reportGuidedAigcAnalysis) }}</strong>
+            <small>{{ formatAiRange(store.reportGuidedAigcAnalysis) }}</small>
+          </article>
         </div>
         <p>{{ store.aigcAnalysis.summary }}</p>
         <p v-if="store.aigcAnalysis.calibrationSummary">{{ store.aigcAnalysis.calibrationSummary }}</p>
@@ -130,6 +173,11 @@ function formatAiRange(analysis: AigcAnalysis | null) {
           <strong>3</strong>
           <span>全文改写</span>
           <small>{{ store.trialEvaluation ? "叠加跑全文或直接全篇" : "可直接全篇" }}</small>
+        </div>
+        <div class="flow-step" :class="{ active: store.activeRewriteKind === 'report', done: Boolean(store.reportGuidedAigcAnalysis) }">
+          <strong>4</strong>
+          <span>PP 报告定向</span>
+          <small>{{ store.activeExternalReport ? `匹配 ${store.reportGuidedIndices.length} 段` : "先导入报告" }}</small>
         </div>
       </section>
 
@@ -215,6 +263,20 @@ function formatAiRange(analysis: AigcAnalysis | null) {
         >
           <Gauge :size="17" />
           直接整篇改写
+        </button>
+        <button
+          class="secondary-button"
+          type="button"
+          :disabled="
+            !store.activeExternalReport ||
+            store.reportGuidedIndices.length === 0 ||
+            (store.loading && store.activeRewriteKind !== 'report')
+          "
+          @click="store.activeRewriteKind === 'report' ? store.cancelRewrite() : store.rewriteByPaperPassReport()"
+        >
+          <Square v-if="store.activeRewriteKind === 'report'" :size="17" />
+          <FileSearch v-else :size="17" />
+          {{ store.activeRewriteKind === "report" ? "中止定向" : "按 PP 报告改写" }}
         </button>
       </div>
     </section>

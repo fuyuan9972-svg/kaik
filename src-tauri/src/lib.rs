@@ -6,6 +6,7 @@ mod config;
 mod exporter;
 mod models;
 mod parser;
+mod paperpass_report;
 mod rewriter;
 mod trial_evaluator;
 mod utils;
@@ -20,6 +21,7 @@ pub fn run() {
             commands::parse_file,
             commands::estimate_rewrite_scope,
             commands::select_sample_indices,
+            commands::parse_paperpass_report,
             commands::rewrite_paragraphs,
             commands::cancel_rewrite,
             commands::test_connection,

@@ -60,6 +60,11 @@ pub fn select_sample_indices(
 }
 
 #[tauri::command]
+pub fn parse_paperpass_report(report_path: String) -> Result<crate::models::ExternalAigcReportEvidence, String> {
+    crate::paperpass_report::parse_report(&report_path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
 pub async fn rewrite_paragraphs(
     app: AppHandle,
     cancel_state: State<'_, RewriteCancelState>,

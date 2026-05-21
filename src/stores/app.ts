@@ -12,6 +12,7 @@ import type {
   ApiConfig,
   PageName,
   Paragraph,
+  ExternalAigcReportEvidence,
   RewriteOptions,
   RewriteProgress,
   RewriteResult,
@@ -37,6 +38,9 @@ interface AppState {
   trialDraftAigcAnalysis: AigcAnalysis | null;
   stackedFullAigcAnalysis: AigcAnalysis | null;
   directFullAigcAnalysis: AigcAnalysis | null;
+  reportGuidedAigcAnalysis: AigcAnalysis | null;
+  activeExternalReport: ExternalAigcReportEvidence | null;
+  reportGuidedIndices: number[];
   aigcCalibrations: AigcCalibrationSample[];
   detectionSnapshots: AigcDetectionSnapshot[];
   feedbackRecords: AigcFeedbackRecord[];
@@ -49,7 +53,7 @@ interface AppState {
   config: ApiConfig;
   currentAiRate: number;
   targetAiRate: number;
-  activeRewriteKind: "full" | "sample" | "stacked" | "";
+  activeRewriteKind: "full" | "sample" | "stacked" | "report" | "";
   cancelRewriteRequested: boolean;
   _saveResultsTimer: ReturnType<typeof setTimeout> | null;
   loading: boolean;
@@ -95,6 +99,9 @@ export const useAppStore = defineStore("app", {
     trialDraftAigcAnalysis: null,
     stackedFullAigcAnalysis: null,
     directFullAigcAnalysis: null,
+    reportGuidedAigcAnalysis: null,
+    activeExternalReport: null,
+    reportGuidedIndices: [],
     aigcCalibrations: [],
     detectionSnapshots: [],
     feedbackRecords: [],
@@ -132,7 +139,16 @@ export const useAppStore = defineStore("app", {
     currentSession: (state) =>
       state.sessions.find((session) => session.id === state.currentSessionId) ?? null,
     latestExternalReport: (state) =>
-      state.feedbackRecords.find((record) => record.externalReport)?.externalReport ?? null,
+      state.activeExternalReport ??
+      state.feedbackRecords.find((record) => record.externalReport)?.externalReport ??
+      null,
+    reportGuidedBodySegmentCount: (state) =>
+      state.activeExternalReport?.segments.filter((segment) => segment.segmentKind === "body").length ?? 0,
+    canRunReportGuidedRewrite: (state) =>
+      Boolean(state.activeExternalReport) &&
+      state.reportGuidedIndices.length > 0 &&
+      state.paragraphs.length > 0 &&
+      !state.loading,
   },
 
   actions: {
@@ -204,12 +220,18 @@ export const useAppStore = defineStore("app", {
 
     async rewrite(options: RewriteOptions = {}) {
       await this.flushPendingResultsSave();
-      const activeKind = options.sampleLimit ? "sample" : options.stackedFull ? "stacked" : "full";
+      const activeKind = options.reportGuided
+        ? "report"
+        : options.sampleLimit
+          ? "sample"
+          : options.stackedFull
+            ? "stacked"
+            : "full";
       const sourceParagraphs = options.stackedFull ? this.mergeRewriteResults(this.paragraphs, this.results) : this.paragraphs;
-      const existingResults = options.sampleLimit || options.stackedFull
+      const existingResults = options.sampleLimit || options.stackedFull || options.reportGuided
         ? []
         : this.results.filter((item) => item.accepted && !item.failed && !item.skipped);
-      const excludeIndices = options.sampleLimit || options.stackedFull ? [] : existingResults.map((item) => item.index);
+      const excludeIndices = options.sampleLimit || options.stackedFull || options.reportGuided ? [] : existingResults.map((item) => item.index);
       const rewriteOptions = {
         ...options,
         externalReport: options.externalReport ?? this.latestExternalReport,
@@ -241,9 +263,11 @@ export const useAppStore = defineStore("app", {
             ? "stackedFullRewrite"
             : options.sampleLimit
               ? "sampleTrial"
-              : options.includeIndices?.length
-                ? "guidedRewrite"
-                : "fullRewrite",
+              : options.reportGuided
+                ? "reportGuidedRewrite"
+                : options.includeIndices?.length
+                  ? "guidedRewrite"
+                  : "fullRewrite",
           paragraphs: sourceParagraphs,
           results: this.results,
           updatedAt: Date.now().toString(),
@@ -283,7 +307,7 @@ export const useAppStore = defineStore("app", {
           await this.evaluateTrialRewrite();
         } else {
           await this.analyzeRewriteDraft(
-            options.stackedFull ? "stacked" : "direct",
+            options.stackedFull ? "stacked" : options.reportGuided ? "report" : "direct",
             sourceParagraphs,
             finalResults,
           );
@@ -317,6 +341,43 @@ export const useAppStore = defineStore("app", {
         return;
       }
       await this.rewrite({ stackedFull: true });
+    },
+
+    async importPaperPassReport(reportPath: string) {
+      this.loading = true;
+      this.error = "";
+      this.status = "正在解析 PaperPass 报告";
+      try {
+        this.activeExternalReport = await invoke<ExternalAigcReportEvidence>("parse_paperpass_report", {
+          reportPath,
+        });
+        this.reportGuidedIndices = this.matchReportBodySegments(this.activeExternalReport);
+        const score = this.activeExternalReport.totalSuspectedRatio ?? this.activeExternalReport.reportScore;
+        const scoreText = score == null ? "未知" : `${score.toFixed(2)}%`;
+        this.status = `已导入 PP 报告：${scoreText}，匹配正文段 ${this.reportGuidedIndices.length} 个`;
+      } catch (error) {
+        this.error = String(error);
+      } finally {
+        this.loading = false;
+      }
+    },
+
+    async rewriteByPaperPassReport() {
+      if (!this.activeExternalReport) {
+        this.error = "请先导入 PaperPass AIGC 报告";
+        return;
+      }
+      this.ensureDefaultRewriteFlow();
+      this.reportGuidedIndices = this.matchReportBodySegments(this.activeExternalReport);
+      if (this.reportGuidedIndices.length === 0) {
+        this.error = "PP 报告没有匹配到当前论文正文段，无法定向改写";
+        return;
+      }
+      await this.rewrite({
+        includeIndices: this.reportGuidedIndices,
+        externalReport: this.activeExternalReport,
+        reportGuided: true,
+      });
     },
 
     async evaluateTrialRewrite() {
@@ -358,6 +419,8 @@ export const useAppStore = defineStore("app", {
       this.status =
         this.activeRewriteKind === "sample"
           ? "正在中止测试，当前段落返回后停止"
+          : this.activeRewriteKind === "report"
+            ? "正在中止 PP 定向改写，当前段落返回后停止"
           : "正在中止改写，当前段落返回后停止";
       try {
         await invoke("cancel_rewrite");
@@ -434,7 +497,7 @@ export const useAppStore = defineStore("app", {
     },
 
     async analyzeRewriteDraft(
-      target: "trial" | "stacked" | "direct",
+      target: "trial" | "stacked" | "direct" | "report",
       sourceParagraphs: Paragraph[],
       results: RewriteResult[],
     ) {
@@ -444,7 +507,9 @@ export const useAppStore = defineStore("app", {
           ? "测试20段后"
           : target === "stacked"
             ? "叠加全文后"
-            : "直接全文后";
+            : target === "report"
+              ? "PP报告定向后"
+              : "直接全文后";
       try {
         const analysis = await invoke<AigcAnalysis>("analyze_aigc_paragraphs_ai", {
           fileName: `${label}-${this.filePath.split("/").pop() || "当前论文"}`,
@@ -453,6 +518,7 @@ export const useAppStore = defineStore("app", {
         });
         if (target === "trial") this.trialDraftAigcAnalysis = analysis;
         else if (target === "stacked") this.stackedFullAigcAnalysis = analysis;
+        else if (target === "report") this.reportGuidedAigcAnalysis = analysis;
         else this.directFullAigcAnalysis = analysis;
       } catch (error) {
         this.status = `${label}混合检测失败：${String(error)}`;
@@ -704,6 +770,9 @@ export const useAppStore = defineStore("app", {
       this.trialDraftAigcAnalysis = null;
       this.stackedFullAigcAnalysis = null;
       this.directFullAigcAnalysis = null;
+      this.reportGuidedAigcAnalysis = null;
+      this.activeExternalReport = null;
+      this.reportGuidedIndices = [];
       this.sampleIndices = [];
       this.trialEvaluation = null;
       this.taskStage = "idle";
@@ -815,9 +884,11 @@ export const useAppStore = defineStore("app", {
           ? "stackedFullRewrite"
           : options.sampleLimit
             ? "sampleTrial"
-            : options.includeIndices?.length
-              ? "guidedRewrite"
-              : "fullRewrite",
+            : options.reportGuided
+              ? "reportGuidedRewrite"
+              : options.includeIndices?.length
+                ? "guidedRewrite"
+                : "fullRewrite",
         paragraphs,
         results,
         exportedPath: null,
@@ -838,6 +909,68 @@ export const useAppStore = defineStore("app", {
         ...patch,
         updatedAt: Date.now().toString(),
       };
+    },
+
+    matchReportBodySegments(report: ExternalAigcReportEvidence | null) {
+      if (!report || this.paragraphs.length === 0) {
+        return [];
+      }
+      const matches = new Set<number>();
+      const candidates = this.paragraphs
+        .filter((paragraph) => !paragraph.skip)
+        .map((paragraph) => ({
+          index: paragraph.index,
+          compact: this.compactForReportMatch(paragraph.text),
+        }))
+        .filter((paragraph) => paragraph.compact.length >= 30);
+      for (const segment of report.segments.filter((item) => item.segmentKind === "body")) {
+        const compactSegment = this.compactForReportMatch(segment.text);
+        if (compactSegment.length < 20) continue;
+        let bestIndex = -1;
+        let bestScore = 0;
+        const probe = compactSegment.slice(0, Math.min(60, compactSegment.length));
+        for (const paragraph of candidates) {
+          if (paragraph.compact.includes(probe) || compactSegment.includes(paragraph.compact.slice(0, 60))) {
+            bestIndex = paragraph.index;
+            bestScore = 1;
+            break;
+          }
+          const score = this.shingleContainment(compactSegment, paragraph.compact);
+          if (score > bestScore) {
+            bestScore = score;
+            bestIndex = paragraph.index;
+          }
+        }
+        if (bestIndex >= 0 && bestScore >= 0.32) {
+          matches.add(bestIndex);
+        }
+      }
+      return [...matches].sort((a, b) => a - b);
+    },
+
+    compactForReportMatch(text: string) {
+      return text.replace(/[^\u4e00-\u9fffA-Za-z0-9]/g, "");
+    },
+
+    shingleContainment(left: string, right: string) {
+      const leftSet = this.toShingles(left, 2);
+      const rightSet = this.toShingles(right, 2);
+      if (leftSet.size === 0 || rightSet.size === 0) {
+        return 0;
+      }
+      let shared = 0;
+      for (const item of leftSet) {
+        if (rightSet.has(item)) shared += 1;
+      }
+      return shared / Math.min(leftSet.size, rightSet.size);
+    },
+
+    toShingles(text: string, size: number) {
+      const output = new Set<string>();
+      for (let index = 0; index <= text.length - size; index += 1) {
+        output.add(text.slice(index, index + size));
+      }
+      return output;
     },
 
   },
