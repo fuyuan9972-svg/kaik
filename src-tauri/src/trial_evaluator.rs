@@ -95,7 +95,7 @@ fn compact_analysis(analysis: &AigcAnalysis) -> serde_json::Value {
 }
 
 fn trial_prompt() -> &'static str {
-    "你是 PaperPass 风格降 AIGC 试跑评估器，使用检测 API 做决策，不负责改写。用户会给你一篇论文的原稿混合检测结果、试跑目标 AI 率，以及测试20段的原文和改写后文本。\n\n核心目标：试跑不是追最终目标，而是判断这套策略能否先把原稿混合AI率降低约10-15个百分点。payload 里的 trialTargetAigc 就是本轮试跑评估目标，例如原稿60%，试跑评估目标约45%。payload 里的 targetAiRate 是最终全文改写目标，不能被 trialTargetAigc 直接替代。\n\n判断重点：\n1. 是否朝 trialTargetAigc 的方向有效降低 AI 味，而不是简单同义替换。\n2. 是否改得太弱，仍保留高 AI 模板句、万能意义句和标准润色腔。\n3. 是否过度扩写、解释腔过重、缓冲词堆叠，导致后续全文可能像模型执行提示词。\n4. 是否过于顺滑、过完整、像标准论文润色稿。\n5. 是否出现规则复述、prompt 泄漏、事实新增、格式污染。\n6. 是否可能提高查重风险：太接近原文是改写不足，新增固定表达过多也有风险。\n7. 最终给出能执行的下一步：全文继续、只改高风险、提高强度、回压、切换基线/2.0 或暂停等 PP 实测。\n\n只返回 JSON 对象，不要 Markdown，不要解释。结构必须是：\n{\n  \"verdict\": \"合格|偏弱|过度|不建议继续|评估失败\",\n  \"recommendedAction\": \"continue_full|rewrite_risky_only|increase_strength|reduce_expansion|switch_to_baseline|switch_to_v2|stop_and_test_pp\",\n  \"recommendedProfile\": \"sample_calibrated_17_v2|sample_calibrated_17_success\",\n  \"recommendedCurrentAiRate\": 0-100数字或null,\n  \"recommendedTargetAiRate\": 0-100数字或null，表示下一步全文改写目标，不要直接填 trialTargetAigc,\n  \"recommendedParagraphIndices\": [段落index],\n  \"summary\": \"一句中文结论，必须说明是否接近试跑目标\",\n  \"risks\": [\"风险1\", \"风险2\"],\n  \"confidence\": 0-100数字\n}"
+    "你是 PaperPass 风格降 AIGC 试跑评估器，使用检测 API 做决策，不负责改写。用户会给你一篇论文的原稿混合检测结果、试跑目标 AI 率，以及测试20段的原文和改写后文本。\n\n核心流程已经固定：成功链路17 2.0 默认使用 60→10 强度；测试20段后，叠加跑全文仍保持 60→10，不根据试跑检测值自动改 currentAiRate 或 targetAiRate。你的任务只判断是否继续叠加、是否只改高风险段、是否过度或暂停，不要建议改写强度数值。\n\n核心目标：试跑不是追最终目标，而是判断这套策略能否先把原稿混合AI率降低约10-15个百分点。payload 里的 trialTargetAigc 就是本轮试跑评估目标，例如原稿60%，试跑评估目标约45%。payload 里的 targetAiRate 是固定全文目标，只用于说明当前强度，不要改它。\n\n判断重点：\n1. 是否朝 trialTargetAigc 的方向有效降低 AI 味，而不是简单同义替换。\n2. 是否改得太弱，仍保留高 AI 模板句、万能意义句和标准润色腔。\n3. 是否过度扩写、解释腔过重、缓冲词堆叠，导致后续全文可能像模型执行提示词。\n4. 是否过于顺滑、过完整、像标准论文润色稿。\n5. 是否出现规则复述、prompt 泄漏、事实新增、格式污染。\n6. 是否可能提高查重风险：太接近原文是改写不足，新增固定表达过多也有风险。\n7. 最终给出能执行的下一步：全文继续、只改高风险、回压、切换基线/2.0 或暂停等 PP 实测；不要输出 increase_strength 作为默认建议。\n\n只返回 JSON 对象，不要 Markdown，不要解释。结构必须是：\n{\n  \"verdict\": \"合格|偏弱|过度|不建议继续|评估失败\",\n  \"recommendedAction\": \"continue_full|rewrite_risky_only|reduce_expansion|switch_to_baseline|switch_to_v2|stop_and_test_pp\",\n  \"recommendedProfile\": \"sample_calibrated_17_v2|sample_calibrated_17_success\",\n  \"recommendedCurrentAiRate\": null,\n  \"recommendedTargetAiRate\": null,\n  \"recommendedParagraphIndices\": [段落index],\n  \"summary\": \"一句中文结论，必须说明是否接近试跑目标，以及是否建议继续叠加全文\",\n  \"risks\": [\"风险1\", \"风险2\"],\n  \"confidence\": 0-100数字\n}"
 }
 
 fn parse_json(output: &str) -> anyhow::Result<RawTrialEvaluation> {
@@ -159,8 +159,8 @@ fn fallback_evaluation(input: &TrialEvaluationInput, error: Option<String>) -> T
     } else if avg_delta < 18.0 {
         (
             "偏弱",
-            "increase_strength",
-            "试跑段落改动偏弱，可能仍保留原稿 AI 模板句。",
+            "rewrite_risky_only",
+            "试跑段落改动偏弱，建议保持60→10强度，叠加全文时优先处理高风险段。",
         )
     } else {
         (

@@ -70,6 +70,9 @@ const defaultConfig: ApiConfig = {
   detectModel: "gpt-5.4",
 };
 
+const DEFAULT_CURRENT_AI_RATE = 60;
+const DEFAULT_TARGET_AI_RATE = 10;
+
 function hasHistoryResults(session: RewriteSession) {
   return session.results.length > 0;
 }
@@ -102,8 +105,8 @@ export const useAppStore = defineStore("app", {
     progressCurrent: 0,
     progressTotal: 0,
     config: { ...defaultConfig },
-    currentAiRate: 60,
-    targetAiRate: 10,
+    currentAiRate: DEFAULT_CURRENT_AI_RATE,
+    targetAiRate: DEFAULT_TARGET_AI_RATE,
     activeRewriteKind: "",
     cancelRewriteRequested: false,
     _saveResultsTimer: null,
@@ -182,6 +185,7 @@ export const useAppStore = defineStore("app", {
         this.filePath = filePath;
         this.paragraphs = await invoke<Paragraph[]>("parse_file", { filePath });
         this.resetRewriteState();
+        this.resetDefaultRewriteFlow();
         await this.refreshScopeStats();
       } catch (error) {
         this.error = String(error);
@@ -302,7 +306,7 @@ export const useAppStore = defineStore("app", {
     },
 
     async runSampleTest() {
-      this.config.promptProfile = this.config.promptProfile || "sample_calibrated_17_v2";
+      this.ensureDefaultRewriteFlow();
       const includeIndices = await this.refreshSampleIndices(20);
       await this.rewrite({ sampleLimit: 20, includeIndices });
     },
@@ -337,15 +341,6 @@ export const useAppStore = defineStore("app", {
         });
         await this.analyzeRewriteDraft("trial", this.paragraphs, this.results);
         this.alignTrialEvaluationWithMixedDetection();
-        if (this.trialEvaluation?.recommendedProfile) {
-          this.config.promptProfile = this.trialEvaluation.recommendedProfile;
-        }
-        if (this.trialEvaluation?.recommendedCurrentAiRate != null) {
-          this.currentAiRate = this.trialEvaluation.recommendedCurrentAiRate;
-        }
-        if (this.trialEvaluation?.recommendedTargetAiRate != null) {
-          this.targetAiRate = this.trialEvaluation.recommendedTargetAiRate;
-        }
         this.taskStage = "evaluated";
         this.status = "试跑评估完成";
       } catch (error) {
@@ -477,7 +472,7 @@ export const useAppStore = defineStore("app", {
       const drop = Math.max(0, Math.round((original - measured) * 10) / 10);
       const gap = Math.round((measured - target) * 10) / 10;
       const verdict = gap <= 3 ? "合格" : gap <= 10 ? "接近" : "偏弱";
-      const recommendedAction = gap <= 3 ? "continue_full" : gap <= 10 ? "rewrite_risky_only" : "increase_strength";
+      const recommendedAction = gap <= 3 ? "continue_full" : "rewrite_risky_only";
       const summary =
         gap <= 3
           ? `测试20段后混合检测为${measured.toFixed(1)}%，已接近试跑目标${target.toFixed(1)}%，可继续叠加跑全文。`
@@ -488,10 +483,13 @@ export const useAppStore = defineStore("app", {
         ...this.trialEvaluation,
         verdict,
         recommendedAction,
-        recommendedCurrentAiRate: measured,
+        recommendedProfile: this.config.promptProfile,
+        recommendedCurrentAiRate: this.currentAiRate,
+        recommendedTargetAiRate: this.targetAiRate,
         summary,
         risks: [
           `混合检测口径：${measured.toFixed(1)}%，区间${this.trialDraftAigcAnalysis.rangeLow.toFixed(1)}%-${this.trialDraftAigcAnalysis.rangeHigh.toFixed(1)}%。`,
+          `主流程保持成功链路17 2.0和固定强度${this.currentAiRate}→${this.targetAiRate}，试跑结论只判断是否继续叠加。`,
           ...this.trialEvaluation.risks.filter((risk) => !risk.includes("48%")).slice(0, 3),
         ],
       };
@@ -712,6 +710,23 @@ export const useAppStore = defineStore("app", {
       this.progressCurrent = 0;
       this.progressTotal = 0;
       this.currentSessionId = "";
+    },
+
+    resetDefaultRewriteFlow() {
+      this.config.promptProfile = "sample_calibrated_17_v2";
+      this.currentAiRate = DEFAULT_CURRENT_AI_RATE;
+      this.targetAiRate = DEFAULT_TARGET_AI_RATE;
+    },
+
+    ensureDefaultRewriteFlow() {
+      if (
+        this.config.promptProfile !== "sample_calibrated_17_v2" &&
+        this.config.promptProfile !== "sample_calibrated_17_success"
+      ) {
+        this.config.promptProfile = "sample_calibrated_17_v2";
+      }
+      this.currentAiRate = DEFAULT_CURRENT_AI_RATE;
+      this.targetAiRate = DEFAULT_TARGET_AI_RATE;
     },
 
     scheduleResultsSave() {
