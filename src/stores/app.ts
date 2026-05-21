@@ -349,6 +349,7 @@ export const useAppStore = defineStore("app", {
           reportPath,
         });
         this.reportGuidedIndices = this.matchReportBodySegments(this.activeExternalReport);
+        await this.saveImportedExternalReportEvidence(this.activeExternalReport);
         const score = this.activeExternalReport.totalSuspectedRatio ?? this.activeExternalReport.reportScore;
         const scoreText = score == null ? "未知" : `${score.toFixed(2)}%`;
         this.status = `已导入 PP 报告：${scoreText}，匹配正文段 ${this.reportGuidedIndices.length} 个`;
@@ -363,6 +364,29 @@ export const useAppStore = defineStore("app", {
       return await invoke<ExternalAigcReportEvidence>("parse_paperpass_report", {
         reportPath,
       });
+    },
+
+    async saveImportedExternalReportEvidence(report: ExternalAigcReportEvidence) {
+      const measuredAigc = report.totalSuspectedRatio ?? report.reportScore;
+      if (measuredAigc == null) {
+        return;
+      }
+      const note = `处理页导入PP改写前报告；正文命中${report.bodySuspiciousSegmentCount ?? 0}段，附录/参考命中${(report.appendixLikeSegmentCount ?? 0) + (report.referenceSegmentCount ?? 0)}段。`;
+      this.feedbackRecords = await invoke<AigcFeedbackRecord[]>("save_feedback_record", {
+        config: this.config,
+        input: {
+          measuredAigc,
+          provider: "paperpass",
+          originalSnapshotId: this.originalSnapshotId || null,
+          sessionId: this.currentSessionId || null,
+          strategy: this.config.promptProfile,
+          round: "改写前PP报告",
+          note,
+          externalReport: report,
+          beforeExternalReport: report,
+        },
+      });
+      this.calibrationRules = await invoke<AigcCalibrationRule[]>("load_calibration_rules");
     },
 
     async rewriteByPaperPassReport() {

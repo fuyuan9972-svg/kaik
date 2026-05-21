@@ -1,9 +1,7 @@
 <script setup lang="ts">
 import { computed, reactive } from "vue";
-import { open } from "@tauri-apps/plugin-dialog";
-import { Database, FileSearch, Save } from "lucide-vue-next";
+import { Database, Save } from "lucide-vue-next";
 import { useAppStore } from "../stores/app";
-import type { ExternalAigcReportEvidence } from "../types";
 
 const store = useAppStore();
 
@@ -17,8 +15,6 @@ const draft = reactive({
   round: "",
   customRound: "",
   note: "",
-  beforeExternalReport: null as ExternalAigcReportEvidence | null,
-  afterExternalReport: null as ExternalAigcReportEvidence | null,
 });
 
 const avgError = computed(() => {
@@ -88,23 +84,15 @@ function providerLabel(value: string | null | undefined) {
 
 async function saveFeedback() {
   const round = draft.round === "手动备注" ? draft.customRound.trim() : draft.round.trim();
-  const measuredAigc =
-    draft.afterExternalReport?.totalSuspectedRatio ??
-    draft.afterExternalReport?.reportScore ??
-    draft.measuredAigc;
   await store.saveFeedbackRecord({
-    measuredAigc,
+    measuredAigc: draft.measuredAigc,
     plagiarismRate: draft.plagiarismRate,
-    provider: draft.beforeExternalReport || draft.afterExternalReport ? "paperpass" : null,
     originalSnapshotId: draft.originalSnapshotId || null,
     rewrittenSnapshotId: draft.rewrittenSnapshotId || null,
     sessionId: draft.sessionId || null,
     strategy: draft.strategy.trim() || null,
     round: round || null,
     note: draft.note.trim() || null,
-    externalReport: draft.afterExternalReport ?? draft.beforeExternalReport,
-    beforeExternalReport: draft.beforeExternalReport,
-    afterExternalReport: draft.afterExternalReport,
   });
 }
 
@@ -123,34 +111,6 @@ function roundLabel(taskType: string | null | undefined, hasTrial: boolean) {
   if (taskType === "fullRewrite") return hasTrial ? "试跑后叠加全文" : "直接全文";
   if (taskType === "sampleTrial") return "测试20段";
   return hasTrial ? "试跑后叠加全文" : "直接全文";
-}
-
-async function chooseReport(kind: "before" | "after") {
-  const selected = await open({
-    multiple: false,
-    directory: false,
-    filters: [
-      {
-        name: "PaperPass 报告",
-        extensions: ["html", "htm"],
-      },
-    ],
-  });
-  if (typeof selected !== "string") return;
-  const report = await store.parsePaperPassReport(selected);
-  if (kind === "before") {
-    draft.beforeExternalReport = report;
-  } else {
-    draft.afterExternalReport = report;
-    draft.measuredAigc = report.totalSuspectedRatio ?? report.reportScore ?? draft.measuredAigc;
-  }
-}
-
-function reportLabel(report: ExternalAigcReportEvidence | null) {
-  if (!report) return "未导入";
-  const score = report.totalSuspectedRatio ?? report.reportScore;
-  const body = report.bodySuspiciousSegmentCount ?? 0;
-  return `${score == null ? "未知" : `${score.toFixed(2)}%`} · 正文命中 ${body} 段`;
 }
 
 function comparisonSummary(record: { reportComparison?: { summary: string } | null }) {
@@ -277,24 +237,6 @@ function comparisonSummary(record: { reportComparison?: { summary: string } | nu
           <span>备注</span>
           <input v-model="draft.note" placeholder="例如：测试20后整篇 / 直跑整篇 / 二次全文处理" />
         </label>
-      </div>
-      <div class="report-pair-grid">
-        <div>
-          <span>改写前 PP 报告</span>
-          <strong>{{ reportLabel(draft.beforeExternalReport) }}</strong>
-          <button class="secondary-button" type="button" :disabled="store.loading" @click="chooseReport('before')">
-            <FileSearch :size="16" />
-            导入前报告
-          </button>
-        </div>
-        <div>
-          <span>改写后 PP 报告</span>
-          <strong>{{ reportLabel(draft.afterExternalReport) }}</strong>
-          <button class="secondary-button" type="button" :disabled="store.loading" @click="chooseReport('after')">
-            <FileSearch :size="16" />
-            导入后报告
-          </button>
-        </div>
       </div>
       <button class="primary-button" type="button" :disabled="store.loading" @click="saveFeedback">
         <Save :size="16" />
