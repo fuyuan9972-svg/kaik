@@ -58,7 +58,7 @@ function aiRateLabel(session: { currentAiRate?: number | null; targetAiRate?: nu
         class="history-item"
         :class="{ active: session.id === store.currentSessionId }"
       >
-        <button class="history-main" type="button" @click="store.applySession(session); store.page = 'compare'">
+        <button class="history-main" type="button" @click="store.openSession(session)">
           <FileText :size="18" />
           <span>
             <strong>{{ session.fileName }}</strong>

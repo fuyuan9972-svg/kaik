@@ -263,8 +263,9 @@ pub fn estimate_rewrite_scope(
 pub async fn rewrite_paragraph(
     client: &Client,
     config: &ApiConfig,
-    options: &RewriteOptions,
+    _options: &RewriteOptions,
     paragraph: Paragraph,
+    system_prompt: &str,
 ) -> RewriteResult {
     if paragraph.skip {
         return RewriteResult {
@@ -296,13 +297,7 @@ pub async fn rewrite_paragraph(
         return rewrite_doubao_two_pass(client, config, paragraph).await;
     }
 
-    let prompt = system_prompt(
-        &config.language,
-        &config.prompt_profile,
-        options,
-        options.external_report.as_ref(),
-    );
-    match rewrite_once(client, config, &prompt, &paragraph.text).await {
+    match rewrite_once(client, config, system_prompt, &paragraph.text).await {
         Ok(rewritten) => build_success_result(config, paragraph, rewritten),
         Err(error) => RewriteResult {
             index: paragraph.index,
@@ -636,7 +631,7 @@ pub fn validate_config(config: &ApiConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-fn system_prompt(
+pub fn system_prompt(
     language: &str,
     prompt_profile: &str,
     options: &RewriteOptions,

@@ -55,7 +55,7 @@ export interface RewriteSession {
   sampleLimit: number | null;
   currentAiRate: number | null;
   targetAiRate: number | null;
-  taskType?: "sampleTrial" | "guidedRewrite" | "fullRewrite" | string | null;
+  taskType?: "sampleTrial" | "guidedRewrite" | "fullRewrite" | "stackedFullRewrite" | null;
   paragraphs: Paragraph[];
   results: RewriteResult[];
   exportedPath: string | null;

@@ -2,6 +2,7 @@ use crate::models::{
     AiAigcAssessment, AiAigcParagraphScore, AigcAnalysis, AigcCalibrationSample,
     AigcFeedbackRecord, ApiConfig, Paragraph,
 };
+use crate::utils::{cjk_count, extract_json_object, is_ai_body_candidate, truncate_text};
 use anyhow::{bail, Context};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
@@ -144,7 +145,7 @@ async fn assess_with_ai(
 fn select_samples(paragraphs: &[Paragraph], local: &AigcAnalysis) -> Vec<AiSampleParagraph> {
     let candidates: Vec<&Paragraph> = paragraphs
         .iter()
-        .filter(|paragraph| is_body_candidate(paragraph))
+        .filter(|paragraph| is_ai_body_candidate(paragraph))
         .collect();
     if candidates.is_empty() {
         return Vec::new();
@@ -278,13 +279,7 @@ fn sample_bins(user_samples: &[AigcCalibrationSample]) -> Vec<String> {
 }
 
 fn parse_ai_json(output: &str) -> anyhow::Result<RawAiAssessment> {
-    let trimmed = output.trim();
-    let json_text = if let Some(start) = trimmed.find('{') {
-        let end = trimmed.rfind('}').context("AI 返回内容不是 JSON 对象")?;
-        &trimmed[start..=end]
-    } else {
-        trimmed
-    };
+    let json_text = extract_json_object(output)?;
     serde_json::from_str(json_text).context("AI 检测返回了非 JSON 内容")
 }
 
@@ -339,30 +334,4 @@ fn clean_vec(value: Option<Vec<String>>) -> Vec<String> {
         .filter_map(|item| clean_text(Some(item)))
         .take(6)
         .collect()
-}
-
-fn is_body_candidate(paragraph: &Paragraph) -> bool {
-    if paragraph.skip {
-        return false;
-    }
-    let cjk = cjk_count(&paragraph.text);
-    cjk >= 35 && paragraph.text.chars().count() >= 45
-}
-
-fn cjk_count(text: &str) -> usize {
-    text.chars()
-        .filter(|ch| ('\u{4e00}'..='\u{9fff}').contains(ch))
-        .count()
-}
-
-fn truncate_text(text: &str, limit: usize) -> String {
-    let mut output = String::new();
-    for (index, ch) in text.chars().enumerate() {
-        if index >= limit {
-            output.push('…');
-            return output;
-        }
-        output.push(ch);
-    }
-    output
 }

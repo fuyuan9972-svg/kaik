@@ -2,6 +2,7 @@ use crate::models::{
     AiAigcAssessment, AigcAnalysis, AigcCalibrationRule, AigcCalibrationSample, AigcMetrics,
     AigcParagraphRisk, AigcSimilarSample, Paragraph,
 };
+use crate::utils::{cjk_count, is_body_candidate, truncate_text};
 use std::{cmp::Ordering, path::Path};
 
 const AI_TERMS: &[&str] = &[
@@ -922,66 +923,14 @@ fn vip_structure_reason(score: usize) -> String {
     }
 }
 
-fn is_body_candidate(paragraph: &Paragraph) -> bool {
-    if paragraph.skip {
-        return false;
-    }
-    let compact: String = paragraph
-        .text
-        .chars()
-        .filter(|ch| !ch.is_whitespace())
-        .collect();
-    let compact_lower = compact.to_ascii_lowercase();
-    if compact.len() < 45 {
-        return false;
-    }
-    if compact.starts_with("关键词")
-        || compact.starts_with("关键字")
-        || compact_lower.starts_with("keywords")
-    {
-        return false;
-    }
-    if compact.contains("参考文献")
-        || compact.contains("目录")
-        || compact.contains("原创性声明")
-        || compact.contains("独创性声明")
-        || compact.contains("本人声明")
-        || compact.contains("版权使用授权书")
-    {
-        return false;
-    }
-    if compact.contains("[J]") || compact.contains("[M]") || compact.contains("[D]") {
-        return false;
-    }
-    cjk_count(&compact) >= 35
-}
-
 fn count_terms(text: &str, terms: &[&str]) -> usize {
     terms.iter().map(|term| text.matches(term).count()).sum()
-}
-
-fn cjk_count(text: &str) -> usize {
-    text.chars()
-        .filter(|ch| ('\u{4e00}'..='\u{9fff}').contains(ch))
-        .count()
 }
 
 fn sentence_count(text: &str) -> usize {
     text.chars()
         .filter(|ch| matches!(ch, '。' | '！' | '？' | '；' | ';'))
         .count()
-}
-
-fn truncate_text(text: &str, limit: usize) -> String {
-    let mut output = String::new();
-    for (index, ch) in text.chars().enumerate() {
-        if index >= limit {
-            output.push('…');
-            return output;
-        }
-        output.push(ch);
-    }
-    output
 }
 
 fn round1(value: f32) -> f32 {

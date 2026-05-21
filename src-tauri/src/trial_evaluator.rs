@@ -1,4 +1,5 @@
 use crate::models::{AigcAnalysis, TrialEvaluation, TrialEvaluationInput};
+use crate::utils::{cjk_count, extract_json_object, truncate_text};
 use anyhow::{bail, Context};
 use reqwest::Client;
 use serde::Deserialize;
@@ -56,8 +57,8 @@ fn build_payload(input: &TrialEvaluationInput) -> anyhow::Result<String> {
         .map(|result| {
             serde_json::json!({
                 "index": result.index,
-                "original": truncate(&result.original, 360),
-                "rewritten": truncate(&result.rewritten, 420),
+                "original": truncate_text(&result.original, 360),
+                "rewritten": truncate_text(&result.rewritten, 420),
                 "originalChars": cjk_count(&result.original),
                 "rewrittenChars": cjk_count(&result.rewritten),
                 "lengthDelta": cjk_count(&result.rewritten) as isize - cjk_count(&result.original) as isize,
@@ -98,13 +99,7 @@ fn trial_prompt() -> &'static str {
 }
 
 fn parse_json(output: &str) -> anyhow::Result<RawTrialEvaluation> {
-    let trimmed = output.trim();
-    let json_text = if let Some(start) = trimmed.find('{') {
-        let end = trimmed.rfind('}').context("AI 返回内容不是 JSON 对象")?;
-        &trimmed[start..=end]
-    } else {
-        trimmed
-    };
+    let json_text = extract_json_object(output)?;
     serde_json::from_str(json_text).context("AI 试跑评估返回了非 JSON 内容")
 }
 
@@ -217,22 +212,4 @@ fn is_supported_profile(value: &str) -> bool {
         value,
         "sample_calibrated_17_v2" | "sample_calibrated_17_success"
     )
-}
-
-fn truncate(text: &str, limit: usize) -> String {
-    let mut output = String::new();
-    for (index, ch) in text.chars().enumerate() {
-        if index >= limit {
-            output.push('…');
-            return output;
-        }
-        output.push(ch);
-    }
-    output
-}
-
-fn cjk_count(text: &str) -> usize {
-    text.chars()
-        .filter(|ch| ('\u{4e00}'..='\u{9fff}').contains(ch))
-        .count()
 }

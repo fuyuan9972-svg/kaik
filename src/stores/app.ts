@@ -51,6 +51,7 @@ interface AppState {
   targetAiRate: number;
   activeRewriteKind: "full" | "sample" | "stacked" | "";
   cancelRewriteRequested: boolean;
+  _saveResultsTimer: ReturnType<typeof setTimeout> | null;
   loading: boolean;
   status: string;
   error: string;
@@ -68,8 +69,6 @@ const defaultConfig: ApiConfig = {
   detectApiKey: "",
   detectModel: "gpt-5.4",
 };
-
-const activePromptProfiles = new Set(["sample_calibrated_17_v2", "sample_calibrated_17_success"]);
 
 function hasHistoryResults(session: RewriteSession) {
   return session.results.length > 0;
@@ -107,6 +106,7 @@ export const useAppStore = defineStore("app", {
     targetAiRate: 10,
     activeRewriteKind: "",
     cancelRewriteRequested: false,
+    _saveResultsTimer: null,
     loading: false,
     status: "",
     error: "",
@@ -139,18 +139,28 @@ export const useAppStore = defineStore("app", {
         if (loadedConfig.promptProfile === "sample_calibrated_17") {
           loadedConfig.promptProfile = "sample_calibrated_17_v2";
         }
-        if (!activePromptProfiles.has(loadedConfig.promptProfile)) {
+        if (
+          loadedConfig.promptProfile !== "sample_calibrated_17_v2" &&
+          loadedConfig.promptProfile !== "sample_calibrated_17_success"
+        ) {
           loadedConfig.promptProfile = "sample_calibrated_17_v2";
         }
         if (!loadedConfig.detectModel?.trim()) {
           loadedConfig.detectModel = "gpt-5.4";
         }
         this.config = loadedConfig;
-        this.sessions = await invoke<RewriteSession[]>("load_sessions");
-        this.aigcCalibrations = await invoke<AigcCalibrationSample[]>("load_aigc_calibrations");
-        this.detectionSnapshots = await invoke<AigcDetectionSnapshot[]>("load_detection_snapshots");
-        this.feedbackRecords = await invoke<AigcFeedbackRecord[]>("load_feedback_records");
-        this.calibrationRules = await invoke<AigcCalibrationRule[]>("load_calibration_rules");
+        const [sessions, calibrations, snapshots, feedback, rules] = await Promise.all([
+          invoke<RewriteSession[]>("load_sessions"),
+          invoke<AigcCalibrationSample[]>("load_aigc_calibrations"),
+          invoke<AigcDetectionSnapshot[]>("load_detection_snapshots"),
+          invoke<AigcFeedbackRecord[]>("load_feedback_records"),
+          invoke<AigcCalibrationRule[]>("load_calibration_rules"),
+        ]);
+        this.sessions = sessions;
+        this.aigcCalibrations = calibrations;
+        this.detectionSnapshots = snapshots;
+        this.feedbackRecords = feedback;
+        this.calibrationRules = rules;
         const latest = this.sessions.find(hasHistoryResults);
         if (latest) {
           this.applySession(latest);
@@ -162,6 +172,7 @@ export const useAppStore = defineStore("app", {
     },
 
     async parseFile(filePath: string) {
+      await this.flushPendingResultsSave();
       this.loading = true;
       this.activeRewriteKind = "";
       this.cancelRewriteRequested = false;
@@ -170,21 +181,7 @@ export const useAppStore = defineStore("app", {
       try {
         this.filePath = filePath;
         this.paragraphs = await invoke<Paragraph[]>("parse_file", { filePath });
-        this.results = [];
-        this.aigcAnalysis = null;
-        this.originalSnapshotId = "";
-        this.originalAigcAnalysis = null;
-        this.rewrittenSnapshotId = "";
-        this.rewrittenAigcAnalysis = null;
-        this.trialDraftAigcAnalysis = null;
-        this.stackedFullAigcAnalysis = null;
-        this.directFullAigcAnalysis = null;
-        this.sampleIndices = [];
-        this.trialEvaluation = null;
-        this.taskStage = "idle";
-        this.progressCurrent = 0;
-        this.progressTotal = 0;
-        this.currentSessionId = "";
+        this.resetRewriteState();
         await this.refreshScopeStats();
       } catch (error) {
         this.error = String(error);
@@ -202,8 +199,9 @@ export const useAppStore = defineStore("app", {
     },
 
     async rewrite(options: RewriteOptions = {}) {
+      await this.flushPendingResultsSave();
       const activeKind = options.sampleLimit ? "sample" : options.stackedFull ? "stacked" : "full";
-      const sourceParagraphs = options.stackedFull ? this.buildTrialDraftParagraphs() : this.paragraphs;
+      const sourceParagraphs = options.stackedFull ? this.mergeRewriteResults(this.paragraphs, this.results) : this.paragraphs;
       const existingResults = options.sampleLimit || options.stackedFull
         ? []
         : this.results.filter((item) => item.accepted && !item.failed && !item.skipped);
@@ -405,6 +403,7 @@ export const useAppStore = defineStore("app", {
     },
 
     async exportDocx(outputPath: string) {
+      await this.flushPendingResultsSave();
       this.loading = true;
       this.error = "";
       this.status = "正在导出 .docx";
@@ -414,13 +413,7 @@ export const useAppStore = defineStore("app", {
             sessionId: this.currentSessionId,
             outputPath,
           });
-          const activeId = this.currentSessionId;
           this.updateCurrentSession({ exportedPath });
-          this.sessions = await invoke<RewriteSession[]>("load_sessions");
-          const active = this.sessions.find((session) => session.id === activeId);
-          if (active) {
-            this.applySession(active);
-          }
           await this.analyzeExportedDocx(exportedPath);
         } else {
           const exportedPath = await invoke<string>("export_docx", {
@@ -508,11 +501,12 @@ export const useAppStore = defineStore("app", {
       const item = this.results.find((result) => result.index === index);
       if (item) {
         item.accepted = accepted;
-        void this.saveResults();
+        this.scheduleResultsSave();
       }
     },
 
     async deleteSession(sessionId: string) {
+      await this.flushPendingResultsSave();
       this.sessions = await invoke<RewriteSession[]>("delete_session", { sessionId });
       if (this.currentSessionId === sessionId) {
         const next = this.sessions.find(hasHistoryResults);
@@ -520,11 +514,10 @@ export const useAppStore = defineStore("app", {
           this.applySession(next);
           this.page = "compare";
         } else {
-          this.currentSessionId = "";
           this.filePath = "";
           this.paragraphs = [];
-          this.results = [];
           this.scopeStats = null;
+          this.resetRewriteState();
           this.page = "home";
         }
       }
@@ -693,8 +686,51 @@ export const useAppStore = defineStore("app", {
       void this.refreshScopeStats();
     },
 
+    async openSession(session: RewriteSession) {
+      await this.flushPendingResultsSave();
+      this.applySession(session);
+      this.page = "compare";
+    },
+
     async refreshScopeStats(options: RewriteOptions = {}) {
       this.scopeStats = await this.estimateScopeStats(options);
+    },
+
+    resetRewriteState() {
+      this.results = [];
+      this.aigcAnalysis = null;
+      this.originalSnapshotId = "";
+      this.originalAigcAnalysis = null;
+      this.rewrittenSnapshotId = "";
+      this.rewrittenAigcAnalysis = null;
+      this.trialDraftAigcAnalysis = null;
+      this.stackedFullAigcAnalysis = null;
+      this.directFullAigcAnalysis = null;
+      this.sampleIndices = [];
+      this.trialEvaluation = null;
+      this.taskStage = "idle";
+      this.progressCurrent = 0;
+      this.progressTotal = 0;
+      this.currentSessionId = "";
+    },
+
+    scheduleResultsSave() {
+      if (this._saveResultsTimer) {
+        clearTimeout(this._saveResultsTimer);
+      }
+      this._saveResultsTimer = setTimeout(() => {
+        this._saveResultsTimer = null;
+        void this.saveResults();
+      }, 800);
+    },
+
+    async flushPendingResultsSave() {
+      if (!this._saveResultsTimer) {
+        return;
+      }
+      clearTimeout(this._saveResultsTimer);
+      this._saveResultsTimer = null;
+      await this.saveResults();
     },
 
     async refreshSampleIndices(limit = 20) {
@@ -725,18 +761,6 @@ export const useAppStore = defineStore("app", {
         paragraphs: sourceParagraphs,
         options,
       });
-    },
-
-    buildTrialDraftParagraphs() {
-      const replacements = new Map(
-        this.results
-          .filter((item) => item.accepted && !item.failed && !item.skipped)
-          .map((item) => [item.index, item.rewritten]),
-      );
-      return this.paragraphs.map((paragraph) => ({
-        ...paragraph,
-        text: replacements.get(paragraph.index) ?? paragraph.text,
-      }));
     },
 
     mergeRewriteResults(paragraphs: Paragraph[], results: RewriteResult[]) {

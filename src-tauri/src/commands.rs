@@ -4,11 +4,11 @@ use crate::models::{
     RewriteOptions, RewriteProgress, RewriteResult, RewriteScopeStats, RewriteSession,
     TrialEvaluation, TrialEvaluationInput,
 };
-use std::path::Path;
 use std::sync::{
     atomic::{AtomicBool, Ordering},
     Arc,
 };
+use std::{collections::BTreeMap, path::Path};
 use tauri::{AppHandle, Emitter, State};
 
 #[derive(Clone, Default)]
@@ -72,21 +72,40 @@ pub async fn rewrite_paragraphs(
     crate::rewriter::validate_config(&config).map_err(|error| error.to_string())?;
     let client = crate::rewriter::create_client().map_err(|error| error.to_string())?;
     let rewrite_options = options.unwrap_or_default();
+    let prompt = crate::rewriter::system_prompt(
+        &config.language,
+        &config.prompt_profile,
+        &rewrite_options,
+        rewrite_options.external_report.as_ref(),
+    );
     let selected = crate::rewriter::select_paragraphs(paragraphs, Some(rewrite_options.clone()));
     let total = selected.len();
     let mut active_session = session;
-    let mut results = active_session
+    let mut result_map: BTreeMap<usize, RewriteResult> = active_session
         .as_ref()
-        .map(|session| session.results.clone())
-        .unwrap_or_else(|| Vec::with_capacity(total));
+        .map(|session| {
+            session
+                .results
+                .iter()
+                .cloned()
+                .map(|result| (result.index, result))
+                .collect()
+        })
+        .unwrap_or_default();
 
     for (position, paragraph) in selected.into_iter().enumerate() {
         if cancel_state.is_cancelled() {
             break;
         }
 
-        let result =
-            crate::rewriter::rewrite_paragraph(&client, &config, &rewrite_options, paragraph).await;
+        let result = crate::rewriter::rewrite_paragraph(
+            &client,
+            &config,
+            &rewrite_options,
+            paragraph,
+            &prompt,
+        )
+        .await;
         let current = position + 1;
         let status = if result.failed {
             format!("第 {current}/{total} 段失败，已保留原文")
@@ -105,19 +124,17 @@ pub async fn rewrite_paragraphs(
         )
         .map_err(|error| error.to_string())?;
 
-        if let Some(index) = results.iter().position(|item| item.index == result.index) {
-            results[index] = result;
-        } else {
-            results.push(result);
-        }
-        results.sort_by_key(|item| item.index);
-        if let Some(session) = active_session.as_mut() {
-            session.results = results.clone();
-            session.updated_at = current_timestamp();
-            crate::config::upsert_session(&app, session.clone())
-                .map_err(|error| error.to_string())?;
-        } else {
-            crate::config::save_results(&app, &results).map_err(|error| error.to_string())?;
+        result_map.insert(result.index, result);
+        let results: Vec<RewriteResult> = result_map.values().cloned().collect();
+        if position % 5 == 4 || current == total {
+            if let Some(session) = active_session.as_mut() {
+                session.results = results.clone();
+                session.updated_at = current_timestamp();
+                crate::config::upsert_session(&app, session.clone())
+                    .map_err(|error| error.to_string())?;
+            } else {
+                crate::config::save_results(&app, &results).map_err(|error| error.to_string())?;
+            }
         }
 
         if cancel_state.is_cancelled() {
@@ -125,7 +142,10 @@ pub async fn rewrite_paragraphs(
         }
     }
 
-    if let Some(session) = active_session {
+    let results: Vec<RewriteResult> = result_map.values().cloned().collect();
+    if let Some(mut session) = active_session {
+        session.results = results.clone();
+        session.updated_at = current_timestamp();
         crate::config::upsert_session(&app, session).map_err(|error| error.to_string())?;
     } else {
         crate::config::save_results(&app, &results).map_err(|error| error.to_string())?;

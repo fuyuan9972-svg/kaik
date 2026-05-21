@@ -8,6 +8,7 @@ mod models;
 mod parser;
 mod rewriter;
 mod trial_evaluator;
+mod utils;
 
 pub fn run() {
     tauri::Builder::default()
