@@ -76,6 +76,7 @@ const defaultConfig: ApiConfig = {
 
 const DEFAULT_CURRENT_AI_RATE = 60;
 const DEFAULT_TARGET_AI_RATE = 10;
+const MAX_REPORT_GUIDED_SEGMENTS = 24;
 
 function hasHistoryResults(session: RewriteSession) {
   return session.results.length > 0;
@@ -144,10 +145,15 @@ export const useAppStore = defineStore("app", {
       null,
     reportGuidedBodySegmentCount: (state) =>
       state.activeExternalReport?.segments.filter((segment) => segment.segmentKind === "body").length ?? 0,
+    reportGuidedTooBroad: (state) =>
+      Boolean(state.activeExternalReport) &&
+      (state.reportGuidedIndices.length > MAX_REPORT_GUIDED_SEGMENTS ||
+        (state.activeExternalReport?.bodySuspiciousSegmentCount ?? 0) > MAX_REPORT_GUIDED_SEGMENTS),
     canRunReportGuidedRewrite: (state) =>
       Boolean(state.activeExternalReport) &&
       state.reportGuidedIndices.length > 0 &&
       state.paragraphs.length > 0 &&
+      state.reportGuidedIndices.length <= MAX_REPORT_GUIDED_SEGMENTS &&
       !state.loading,
   },
 
@@ -398,6 +404,10 @@ export const useAppStore = defineStore("app", {
       this.reportGuidedIndices = this.matchReportBodySegments(this.activeExternalReport);
       if (this.reportGuidedIndices.length === 0) {
         this.error = "PP 报告没有匹配到当前论文正文段，无法定向改写";
+        return;
+      }
+      if (this.reportGuidedIndices.length > MAX_REPORT_GUIDED_SEGMENTS) {
+        this.error = `PP 报告匹配 ${this.reportGuidedIndices.length} 段，范围过大；这类情况按 PP 定向会变成全文重跑，建议先用 17 2.0 测试20段后叠加全文。`;
         return;
       }
       await this.rewrite({
@@ -961,7 +971,11 @@ export const useAppStore = defineStore("app", {
             paragraph.skipReason !== "封面或元信息" &&
             paragraph.skipReason !== "关键词段落",
         );
-      for (const segment of report.segments.filter((item) => item.segmentKind === "body")) {
+      const reportSegments = report.segments
+        .filter((item) => item.segmentKind === "body")
+        .filter((item) => item.suspectedRatio >= 70)
+        .slice(0, MAX_REPORT_GUIDED_SEGMENTS);
+      for (const segment of reportSegments) {
         const compactSegment = this.compactForReportMatch(segment.text);
         if (compactSegment.length < 20) continue;
         let bestIndex = -1;

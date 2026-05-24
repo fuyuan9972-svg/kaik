@@ -100,8 +100,9 @@ async function choosePaperPassReport() {
             {{ (store.activeExternalReport.totalSuspectedRatio ?? store.activeExternalReport.reportScore ?? 0).toFixed(2) }}%
           </strong>
           <small>
-            正文命中 {{ store.reportGuidedBodySegmentCount }} 段，当前匹配 {{ store.reportGuidedIndices.length }} 段
+            正文命中 {{ store.reportGuidedBodySegmentCount }} 段，高疑似匹配 {{ store.reportGuidedIndices.length }} 段
           </small>
+          <small v-if="store.reportGuidedTooBroad">命中范围过大，优先走20段叠加</small>
         </div>
         <button class="secondary-button" type="button" :disabled="store.loading" @click="choosePaperPassReport">
           <FileSearch :size="17" />
@@ -177,7 +178,7 @@ async function choosePaperPassReport() {
         <div class="flow-step" :class="{ active: store.activeRewriteKind === 'report', done: Boolean(store.reportGuidedAigcAnalysis) }">
           <strong>4</strong>
           <span>PP 报告定向</span>
-          <small>{{ store.activeExternalReport ? `匹配 ${store.reportGuidedIndices.length} 段` : "先导入报告" }}</small>
+          <small>{{ store.activeExternalReport ? `高疑似匹配 ${store.reportGuidedIndices.length} 段` : "先导入报告" }}</small>
         </div>
       </section>
 
@@ -270,6 +271,7 @@ async function choosePaperPassReport() {
           :disabled="
             !store.activeExternalReport ||
             store.reportGuidedIndices.length === 0 ||
+            store.reportGuidedTooBroad ||
             (store.loading && store.activeRewriteKind !== 'report')
           "
           @click="store.activeRewriteKind === 'report' ? store.cancelRewrite() : store.rewriteByPaperPassReport()"

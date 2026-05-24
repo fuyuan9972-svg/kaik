@@ -448,6 +448,11 @@ fn build_rewrite_guidance(
     } else {
         String::new()
     };
+    let broad_guidance = if total > 30.0 && body_count > 40 {
+        "本报告正文命中范围过大，不适合继续做PP定向；这种情况会退化成带报告提示的全文重跑，优先回到17 2.0测试20段后叠加全文，并加强对长解释段、文献综述和策略清单的拆散。"
+    } else {
+        ""
+    };
     let ratio_guidance = if total <= 10.0 && high <= 0.1 && middle <= 4.5 && segments.len() <= 12 {
         "这类10%内强成功报告说明，17 2.0经过测试20段后叠加全文可以进入极低PP区间，少量致谢、问卷说明和定义解释命中不代表失败。"
     } else if total <= 10.0 && high <= 2.0 && middle <= 5.0 && body_count <= 6 {
@@ -460,8 +465,9 @@ fn build_rewrite_guidance(
         ""
     };
     format!(
-        "{}。{}{}当前成功链路应按“测试20段后叠加全文”理解，不按普通整篇直跑或PP定向归因；PP定向只用于原稿先测PP并高于20，或叠加全文后仍高于20的补救。若是未改写原稿先跑PP或PP仍高于20，再重点拆散{}，把表格/数据解释、文献综述、理论定义、条目解释和案例完整包装改得更分散、更具体。典型命中：{}",
+        "{}。{}{}{}当前成功链路应按“测试20段后叠加全文”理解，不按普通整篇直跑或PP定向归因；PP定向只用于原稿先测PP并高于20，且正文命中范围较窄的情况。若是未改写原稿先跑PP或PP仍高于20，再重点拆散{}，把表格/数据解释、文献综述、理论定义、条目解释和案例完整包装改得更分散、更具体。典型命中：{}",
         severity,
+        broad_guidance,
         ratio_guidance,
         appendix_guidance,
         if risk_types.is_empty() {
