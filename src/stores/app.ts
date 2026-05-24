@@ -427,15 +427,23 @@ export const useAppStore = defineStore("app", {
             trialTargetAigc: this.trialTargetAigc(),
           },
         });
-        await this.analyzeRewriteDraft("trial", this.paragraphs, this.results);
-        this.alignTrialEvaluationWithMixedDetection();
         this.taskStage = "evaluated";
-        this.status = "试跑评估完成";
+        this.status = "试跑评估完成，测试20段后AI率后台检测中";
+        this.analyzeTrialDraftInBackground();
       } catch (error) {
         this.error = String(error);
       } finally {
         this.loading = false;
       }
+    },
+
+    analyzeTrialDraftInBackground() {
+      const sourceParagraphs = [...this.paragraphs];
+      const results = [...this.results];
+      void (async () => {
+        await this.analyzeRewriteDraft("trial", sourceParagraphs, results);
+        this.alignTrialEvaluationWithMixedDetection();
+      })();
     },
 
     async cancelRewrite() {

@@ -4,6 +4,9 @@ use anyhow::{bail, Context};
 use reqwest::Client;
 use serde::Deserialize;
 use std::collections::BTreeSet;
+use tokio::time::{timeout, Duration};
+
+const TRIAL_EVALUATION_TIMEOUT_SECS: u64 = 25;
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -28,9 +31,21 @@ pub async fn evaluate_with_fallback(
         bail!("没有测试20段结果，无法评估");
     }
 
-    match evaluate_with_ai(client, config, &input).await {
-        Ok(value) => Ok(value),
-        Err(error) => Ok(fallback_evaluation(&input, Some(error.to_string()))),
+    match timeout(
+        Duration::from_secs(TRIAL_EVALUATION_TIMEOUT_SECS),
+        evaluate_with_ai(client, config, &input),
+    )
+    .await
+    {
+        Ok(Ok(value)) => Ok(value),
+        Ok(Err(error)) => Ok(fallback_evaluation(&input, Some(error.to_string()))),
+        Err(_) => Ok(fallback_evaluation(
+            &input,
+            Some(format!(
+                "AI试跑评估超过{}秒，已使用本地规则评估",
+                TRIAL_EVALUATION_TIMEOUT_SECS
+            )),
+        )),
     }
 }
 
