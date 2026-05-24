@@ -193,10 +193,7 @@ pub fn external_report_guidance(records: &[AigcFeedbackRecord]) -> String {
         .map(|report| report.marked_span_count)
         .sum::<usize>();
     let mut risk_types = Vec::new();
-    for report in reports
-        .iter()
-        .filter_map(|record| primary_report(record))
-    {
+    for report in reports.iter().filter_map(|record| primary_report(record)) {
         for risk_type in &report.risk_types {
             if !risk_types.iter().any(|item: &String| item == risk_type) {
                 risk_types.push(risk_type.clone());
@@ -388,15 +385,11 @@ pub fn build_rules(records: &[AigcFeedbackRecord]) -> Vec<AigcCalibrationRule> {
                     let total = report.total_suspected_ratio.unwrap_or(record.measured_aigc);
                     let high = report.high_suspected_ratio.unwrap_or(0.0);
                     let middle = report.middle_suspected_ratio.unwrap_or(0.0);
-                    let effective_segments = effective_body_segment_count(report);
-                    (total <= 10.0
+                    total <= 10.0
                         && high <= 0.1
                         && middle <= 4.5
-                        && report.suspicious_segment_count <= 12)
-                        || (total <= 10.0
-                            && high <= 2.0
-                            && middle <= 5.0
-                            && effective_segments <= 6)
+                        && report.suspicious_segment_count <= 12
+                        && !is_report_guided_record(record)
                 })
                 .unwrap_or(false)
         })
@@ -414,7 +407,7 @@ pub fn build_rules(records: &[AigcFeedbackRecord]) -> Vec<AigcCalibrationRule> {
             recommended_strategy: "成功链路17 2.0".to_string(),
             confidence: (strong_success_reports.len() as f32 * 18.0).clamp(34.0, 86.0),
             sample_count: strong_success_reports.len(),
-            summary: "10%内强成功报告说明，17 2.0 经过测试20段后叠加全文或PP报告定向改写可以进入极低PP区间；当总疑似很低、正文有效命中少，即使少量高疑似来自文献定义/引用综述，也不应误判为整体失败。".to_string(),
+            summary: "10%内强成功报告优先归因于17 2.0经过测试20段后叠加全文；PP报告定向不再作为默认强成功路径，只在原稿PP高或叠加后仍高于20时作为补救。".to_string(),
             updated_at: current_timestamp(),
         });
     }
@@ -434,6 +427,7 @@ pub fn build_rules(records: &[AigcFeedbackRecord]) -> Vec<AigcCalibrationRule> {
                         && report.high_suspected_ratio.unwrap_or(0.0) <= 3.0
                         && report.middle_suspected_ratio.unwrap_or(0.0) <= 8.5
                         && effective_segments <= 14
+                        && !is_report_guided_record(record)
                 })
                 .unwrap_or(false)
         })
@@ -857,6 +851,15 @@ fn best_strategy_for_records(records: &[&AigcFeedbackRecord]) -> String {
         .filter_map(|record| record.strategy.clone())
         .next()
         .unwrap_or_else(|| "成功链路17 2.0".to_string())
+}
+
+fn is_report_guided_record(record: &AigcFeedbackRecord) -> bool {
+    let strategy = record.strategy.as_deref().unwrap_or_default();
+    let round = record.round.as_deref().unwrap_or_default();
+    let note = record.note.as_deref().unwrap_or_default();
+    [strategy, round, note].iter().any(|value| {
+        value.contains("PP定向") || value.contains("PP 报告定向") || value.contains("按 PP 报告")
+    })
 }
 
 fn normalized_provider(

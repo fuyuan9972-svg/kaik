@@ -60,7 +60,9 @@ pub fn select_sample_indices(
 }
 
 #[tauri::command]
-pub fn parse_paperpass_report(report_path: String) -> Result<crate::models::ExternalAigcReportEvidence, String> {
+pub fn parse_paperpass_report(
+    report_path: String,
+) -> Result<crate::models::ExternalAigcReportEvidence, String> {
     crate::paperpass_report::parse_report(&report_path).map_err(|error| error.to_string())
 }
 

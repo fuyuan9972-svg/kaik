@@ -62,7 +62,11 @@ fn parse_with_textutil(path: &Path) -> anyhow::Result<Vec<(String, ParagraphStyl
         .with_context(|| format!("unable to run textutil for {}", path.display()))?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        bail!("unable to convert {} with textutil: {}", path.display(), stderr);
+        bail!(
+            "unable to convert {} with textutil: {}",
+            path.display(),
+            stderr
+        );
     }
     let text = String::from_utf8_lossy(&output.stdout);
     Ok(split_text_to_paragraphs(&text))
@@ -238,7 +242,10 @@ mod tests {
         let (skip, reason) = skip_info(
             "表3-5的数据表明，“缺乏科学评价方法”和“幼儿个体差异较大”是受访教师反映最集中的两大困难。多数教师谈到，自己对幼儿语言能力的判断主要依赖主观印象。",
         );
-        assert!(!skip, "table explanation should remain body text: {reason:?}");
+        assert!(
+            !skip,
+            "table explanation should remain body text: {reason:?}"
+        );
 
         let (skip, reason) = skip_info("表3-5 教师访谈问题统计");
         assert!(skip, "short table caption should still be skipped");

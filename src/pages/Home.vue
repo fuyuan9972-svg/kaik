@@ -92,7 +92,7 @@ async function choosePaperPassReport() {
         <div>
           <span>PP 报告定向改写</span>
           <p>
-            适合“原稿先过 PP，再按报告命中正文段改写”。已低于 20 的改写稿不建议继续精修。
+            只作为补救：原稿先过 PP 且高于 20，或 20 段叠加后仍高于 20 时再按命中段处理。
           </p>
         </div>
         <div v-if="store.activeExternalReport" class="report-guided-summary">

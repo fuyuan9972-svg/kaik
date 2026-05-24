@@ -468,7 +468,7 @@ function buildRewriteGuidance(reduce, segments, riskTypes) {
   const top = segments.slice(0, 3).map((segment) => compact(segment.text, 70)).join(" / ");
   const severity =
     totalRatio < 20
-      ? "PP低于20%，按当前目标已经过线；已走17 2.0叠加全文的稿子不建议继续改写"
+      ? "PP低于20%，按当前目标已经过线；已改写稿不建议继续改写"
       : hasHigh
         ? "仍有高疑似片段，优先做命中正文段定向改写"
         : "高疑似为0，优先处理中低风险正文片段，不要继续全篇大扩写";
@@ -478,27 +478,27 @@ function buildRewriteGuidance(reduce, segments, riskTypes) {
       : "";
   const ratioGuidance =
     totalRatio <= 10 &&
-    highRatio <= 2 &&
-    middleRatio <= 5 &&
-    bodySegments.length <= 6
-      ? "这类10%内PP定向改写成功报告说明，按报告命中正文段处理后可以进入强成功区间；残留高/中疑似多集中在文献定义、引用综述和少量参考文献，不需要继续整篇追低。"
-      : totalRatio <= 10 &&
     highRatio <= 0.1 &&
     middleRatio <= 4.5 &&
     segments.length <= 12
       ? "这类10%内强成功报告说明，17 2.0经过测试20段后叠加全文可以进入极低PP区间，少量致谢、问卷说明和定义解释命中不代表失败。"
+      : totalRatio <= 10 &&
+    highRatio <= 2 &&
+    middleRatio <= 5 &&
+    bodySegments.length <= 6
+      ? "这类10%内报告只能说明命中段处理后也能过线；若同时存在20段叠加全文的更低样本，应优先归因给17 2.0测试20段后叠加全文，PP定向只作为原稿高PP或叠加后仍高于20时的补救。"
       : totalRatio <= 18 &&
           highRatio <= 3 &&
           middleRatio <= 8.5 &&
           segments.length <= 14
-        ? "这类15%左右成功报告说明，17 2.0叠加全文已达到过线目标；少量高/中/低疑似片段可以接受，不必为了追低分继续改。"
+        ? "这类15%左右报告只能说明当前稿已达到过线目标；如果该样本来自PP定向，不应反推为优于20段叠加全文，仍以17 2.0测试20段后叠加全文作为默认主链路。"
         : totalRatio <= 18 &&
             highRatio <= 0.1 &&
             middleRatio <= 15 &&
             bodySegments.length <= 12
           ? "这类零高疑似、16%左右报告属于低占比成功边界：正文中疑似仍集中在文献综述、案例观察、理论定义和数据说明；已改写稿可直接停止，未改写原稿才按这些命中段定向处理。"
         : "";
-  return `${severity}。${ratioGuidance}${appendixGuidance}当前成功链路应按“测试20段后叠加全文”理解，不按普通整篇直跑归因。若是未改写原稿先跑PP或PP仍高于20，再重点拆散${riskTypes.join("、") || "完整包装段"}，把表格/数据解释、文献综述、理论定义、条目解释和案例完整包装改得更分散、更具体。典型命中：${top}`;
+  return `${severity}。${ratioGuidance}${appendixGuidance}当前成功链路应按“测试20段后叠加全文”理解，不按普通整篇直跑或PP定向归因；PP定向只用于原稿先测PP并高于20，或叠加全文后仍高于20的补救。若是未改写原稿先跑PP或PP仍高于20，再重点拆散${riskTypes.join("、") || "完整包装段"}，把表格/数据解释、文献综述、理论定义、条目解释和案例完整包装改得更分散、更具体。典型命中：${top}`;
 }
 
 function compact(text, limit) {
