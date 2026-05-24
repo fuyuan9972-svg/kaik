@@ -100,12 +100,23 @@ fn skip_info(text: &str) -> (bool, Option<String>) {
     if latex_inline.is_match(trimmed) {
         return (true, Some("公式段落".to_string()));
     }
-    let caption_re =
-        Regex::new(r"^\s*(图\s*\d+|表\s*\d+|Figure\s+\d+|Table\s+\d+)").expect("valid regex");
-    if caption_re.is_match(trimmed) {
+    let caption_re = Regex::new(
+        r"^\s*(图\s*\d+([-.]\d+)?|表\s*\d+([-.]\d+)?|Figure\s+\d+|Table\s+\d+)\s*[:：]?\s*[\p{Han}A-Za-z0-9（）()《》<>:：,，、\s-]{0,40}$",
+    )
+    .expect("valid regex");
+    if caption_re.is_match(trimmed) && sentence_like_punctuation_count(trimmed) == 0 {
         return (true, Some("图表标题".to_string()));
     }
     (false, None)
+}
+
+fn sentence_like_punctuation_count(text: &str) -> usize {
+    text.matches('。').count()
+        + text.matches('；').count()
+        + text.matches('？').count()
+        + text.matches('！').count()
+        + text.matches(". ").count()
+        + text.matches("; ").count()
 }
 
 fn is_reference_like(text: &str) -> bool {
@@ -220,6 +231,18 @@ mod tests {
         let (skip, reason) = skip_info("研究中的关键词选择需要结合幼儿园体育活动的实际情况。");
         assert!(!skip);
         assert!(reason.is_none());
+    }
+
+    #[test]
+    fn keeps_table_explanation_paragraphs() {
+        let (skip, reason) = skip_info(
+            "表3-5的数据表明，“缺乏科学评价方法”和“幼儿个体差异较大”是受访教师反映最集中的两大困难。多数教师谈到，自己对幼儿语言能力的判断主要依赖主观印象。",
+        );
+        assert!(!skip, "table explanation should remain body text: {reason:?}");
+
+        let (skip, reason) = skip_info("表3-5 教师访谈问题统计");
+        assert!(skip, "short table caption should still be skipped");
+        assert_eq!(reason.as_deref(), Some("图表标题"));
     }
 
     #[test]

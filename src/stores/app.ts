@@ -939,12 +939,20 @@ export const useAppStore = defineStore("app", {
       }
       const matches = new Set<number>();
       const candidates = this.paragraphs
-        .filter((paragraph) => !paragraph.skip)
         .map((paragraph) => ({
           index: paragraph.index,
+          skip: paragraph.skip,
+          skipReason: paragraph.skipReason,
           compact: this.compactForReportMatch(paragraph.text),
         }))
-        .filter((paragraph) => paragraph.compact.length >= 30);
+        .filter(
+          (paragraph) =>
+            paragraph.compact.length >= 30 &&
+            paragraph.skipReason !== "参考文献段落" &&
+            paragraph.skipReason !== "声明段落" &&
+            paragraph.skipReason !== "封面或元信息" &&
+            paragraph.skipReason !== "关键词段落",
+        );
       for (const segment of report.segments.filter((item) => item.segmentKind === "body")) {
         const compactSegment = this.compactForReportMatch(segment.text);
         if (compactSegment.length < 20) continue;
@@ -963,7 +971,7 @@ export const useAppStore = defineStore("app", {
             bestIndex = paragraph.index;
           }
         }
-        if (bestIndex >= 0 && bestScore >= 0.32) {
+        if (bestIndex >= 0 && bestScore >= 0.24) {
           matches.add(bestIndex);
         }
       }
